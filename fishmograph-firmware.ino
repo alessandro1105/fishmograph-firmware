@@ -87,6 +87,10 @@ struct earthquake_t {
   long end_timestamp; //timestamp at which the earthquake ended
   long shutoff_timestamp; //timestamp at which the shutoff event occured
   long collapse_time; //timestamp at which the shutoff event occured
+  float si;
+  float pga;
+  float temperature;
+  bool saved;
 } earthquake;
 
 //Notifications
@@ -109,6 +113,9 @@ void startEarthquakeHandler() {
   
   //timestamp of the earthquake start
   earthquake.start_timestamp = RTC.now().getUnixTime(); //save the timestamp
+
+  //reset the events of the D7S
+  D7S.resetEvents();
  
   //reset earthquake events
   earthquake.events.occuring = true;
@@ -122,8 +129,8 @@ void startEarthquakeHandler() {
   notifications.web.shutoff = false;
   notifications.web.collapse = false;
 
-  //reset the events of the D7S
-  D7S.resetEvents();
+  //setting that the current earthquakes is not saved in the sd card
+  earthquake.saved = false;
 
   //debug information
   DEBUG_PRINTLN(F("--- EARTHQUAKE STARTED ---"));
@@ -141,68 +148,10 @@ void endEarthquakeHandler(float si, float pga, float temperature) {
   earthquake.events.end = true; // earthquake ended
   earthquake.events.occuring = false; //earthquake is not occuring because it's ended
 
-  //preparing the  detection to write to the SD card
-  //parsing the request
-  StaticJsonBuffer<200> jsonBuffer;
-  JsonObject& detection = jsonBuffer.createObject();
-
-  detection["start"] = earthquake.start_timestamp; //start timestamp
-  detection["end"] = earthquake.start_timestamp; //end timestamp
-  detection["si"] = si; //si detected
-  detection["pga"] = pga; //pga detected
-  detection["temperature"] = temperature; //temperature at detection
-  //if the shutoff event is occured
-  if (earthquake.events.shutoff) {
-    detection["shutoff"] = earthquake.shutoff_timestamp;
-  } else {
-    detection["shutoff"] = 0;
-  }
-  //if the collapse event is occured
-  if (earthquake.events.collapse) {
-    detection["collapse"] = earthquake.collapse_time;
-  } else {
-    detection["collapse"] = 0;
-  }
-
-
-  //disable interrupt to prevent corrupting the file
-  noInterrupts();
-
-  //position to last data
-  unsigned long position = 0;
-  //open file
-  if (!file.open(&root, "data.txt", O_READ | O_WRITE)) {
-    file.open(&root, "data.txt", O_CREAT | O_WRITE | O_TRUNC);
-  }
-
-  //counting the data
-  char c;
-  while ((c = file.read()) != -1) {
-    if (c == '}') {
-      position = file.curPosition();
-    }
-  }
-  
-  //if is the first data
-  if (position == 0) {
-    file.rewind();
-    file.print(F("["));
-
-  //there are other data
-  } else {
-    //reset file to the last postion
-    file.seekSet(position);
-    file.print(F(", "));
-  }
-
-  detection.printTo(file);
-  file.print(F("]"));
-
-  //close the file
-  file.close();
-
-  //enable interrupts
-  interrupts();
+  //saving the earthquake data
+  earthquake.si = si;
+  earthquake.pga = pga;
+  earthquake.temperature = temperature;
 
   //debug information
   DEBUG_PRINTLN(F("--- EARTHQUAKE ENDED ---"));
@@ -931,10 +880,86 @@ void initD7S() {
   notifications.web.shutoff = false;
   notifications.web.collapse = false;
 
+  //setting that the earthquake is saved to prevent false entry
+  earthquake.saved = true;
+
+
   //--- STARTING INTERRUPT HANDLING ---
   D7S.startInterruptHandling();
 }
 
+//---------------- UTILS FUNCTIONS ----------------
+void saveEarthquakeData() {
+  if (earthquake.events.end && !earthquake.saved) {
+    //preparing the  detection to write to the SD card
+    //parsing the request
+    StaticJsonBuffer<200> jsonBuffer;
+    JsonObject& detection = jsonBuffer.createObject();
+
+    detection["start"] = earthquake.start_timestamp; //start timestamp
+    detection["end"] = earthquake.start_timestamp; //end timestamp
+    detection["si"] = earthquake.si; //si detected
+    detection["pga"] = earthquake.pga; //pga detected
+    detection["temperature"] = earthquake.temperature; //temperature at detection
+    //if the shutoff event is occured
+    if (earthquake.events.shutoff) {
+      detection["shutoff"] = earthquake.shutoff_timestamp;
+    } else {
+      detection["shutoff"] = 0;
+    }
+    //if the collapse event is occured
+    if (earthquake.events.collapse) {
+      detection["collapse"] = earthquake.collapse_time;
+    } else {
+      detection["collapse"] = 0;
+    }
+
+    //disable interrupt to prevent corrupting the file
+    noInterrupts();
+
+    //position to last data
+    unsigned long position = 0;
+    //open file
+    if (!file.open(&root, "data.txt", O_READ | O_WRITE)) {
+      file.open(&root, "data.txt", O_CREAT | O_WRITE | O_TRUNC);
+    }
+
+    //counting the data
+    char c;
+    while ((c = file.read()) != -1) {
+      if (c == '}') {
+        position = file.curPosition();
+      }
+    }
+    
+    //if is the first data
+    if (position == 0) {
+      file.rewind();
+      file.print(F("["));
+
+    //there are other data
+    } else {
+      //reset file to the last postion
+      file.seekSet(position);
+      file.print(F(", "));
+    }
+
+    detection.printTo(file);
+    file.print(F("]"));
+
+    //close the file
+    file.close();
+
+    //enable interrupts
+    interrupts();
+
+    //setting that the earthquake data has been saved
+    earthquake.saved = true;
+
+  }
+}
+
+//---------------- SETUP AND LOOP ---------------- 
 void setup() {
   Serial.begin(9600);
   while(!Serial)
@@ -951,7 +976,6 @@ void setup() {
   //initialize the D7S sensor
   initD7S();
 
-  
   //the system is initialized, let's start the web server
   web.begin();
 
@@ -963,4 +987,7 @@ void setup() {
 void loop() {
   //process the ingoing requests
   web.process();
+
+  //save the earthquake data if new
+  saveEarthquakeData();
 }
