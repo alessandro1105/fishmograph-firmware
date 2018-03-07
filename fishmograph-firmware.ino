@@ -632,6 +632,185 @@ bool dataD7SHandler(FishinoWebServer &web) {
   return true;
 }
 
+// handler for getting the alerts list
+bool alertListHandler(FishinoWebServer &web) {
+  //start the session handling
+  startSession(web);
+
+  //if the user if not logged we send a 401 - Unauthorized
+  if (!isUserLogged) {
+    sendHTTPStatusCode(web, 401);
+    sendSessionCookie(web);
+    web.endHeaders();
+    return true;
+  }
+
+  //sending the file
+  sendFile(web, "alerts.txt", F("application/json"));
+  
+  return true;
+}
+
+// handler for deleting an alert
+bool alertDeleteHandler(FishinoWebServer &web) {
+  //start the session handling
+  startSession(web);
+
+  //if the user if not logged we send a 401 - Unauthorized
+  if (!isUserLogged) {
+    sendHTTPStatusCode(web, 401);
+    sendSessionCookie(web);
+    web.endHeaders();
+    return true;
+  }
+
+  FishinoClient client = web.getClient();
+  //getting the body of the request
+  char body[client.available() +1]; //we create a buffer of the correct size of the body +1 (the null terminator)
+  int i = 0;
+  while (client.available() && i < 300) {
+    body[i++] = (char) client.read();
+  }
+  body[i] = 0;
+
+  //parsing the request
+  StaticJsonBuffer<200> jsonBuffer;
+  JsonObject& request = jsonBuffer.parseObject(body);
+
+  //the body of the request is incorrect
+  if (!request.success() || !request.containsKey("index")) {
+    sendHTTPStatusCode(web, 400);
+
+  } else {
+
+    //open file
+    if (file.open(&root, "alerts.txt", O_READ | O_WRITE)) {
+
+      //read the entire file of the alerts
+      char buffer[1024];
+
+      //read the file
+      int size = file.read(buffer, 1023);
+      buffer[size] = 0;
+
+      //interpret json
+      StaticJsonBuffer<1024> jsonBuffer;
+      JsonArray& alerts = jsonBuffer.parseArray(buffer);
+
+      if (alerts.success()) {
+        //remove the index
+        alerts.remove((int) request["index"]);
+
+        //close the file and create a new one
+        file.close();
+        file.open(&root, "alerts.txt", O_CREAT | O_WRITE | O_TRUNC);
+
+        //insert the new json
+        alerts.printTo(file);
+
+        //close the file
+        file.close();
+
+        sendHTTPStatusCode(web, 204);
+
+      } else {
+        sendHTTPStatusCode(web, 500);
+      }
+      
+    } else {
+      //send the session "set-cookie" header
+      sendHTTPStatusCode(web, 500);
+    }
+  }
+
+  //send the session "set-cookie" header
+  sendSessionCookie(web);
+  sendHTTPHeader(web, F("Content-Type"), F("application/json"));
+  web.endHeaders();
+
+  return true;
+}
+
+bool alertNewHandler(FishinoWebServer &web) {
+  //start the session handling
+  startSession(web);
+
+  //if the user if not logged we send a 401 - Unauthorized
+  if (!isUserLogged) {
+    sendHTTPStatusCode(web, 401);
+    sendSessionCookie(web);
+    web.endHeaders();
+    return true;
+  }
+
+  FishinoClient client = web.getClient();
+  //getting the body of the request
+  char body[client.available() +1]; //we create a buffer of the correct size of the body +1 (the null terminator)
+  int i = 0;
+  while (client.available() && i < 300) {
+    body[i++] = (char) client.read();
+  }
+  body[i] = 0;
+
+  //parsing the request
+  StaticJsonBuffer<200> jsonBuffer;
+  JsonObject& request = jsonBuffer.parseObject(body);
+
+  //the body of the request is incorrect
+  if (!request.success() || !request.containsKey("name") || !request.containsKey("email")) {
+    sendHTTPStatusCode(web, 400);
+
+  } else {
+
+    //open file
+    if (file.open(&root, "alerts.txt", O_READ | O_WRITE)) {
+
+      //read the entire file of the alerts
+      char buffer[1024];
+
+      //read the file
+      int size = file.read(buffer, 1023);
+      buffer[size] = 0;
+
+      //interpret json
+      StaticJsonBuffer<1024> jsonBuffer;
+      JsonArray& alerts = jsonBuffer.parseArray(buffer);
+
+      if (alerts.success()) {
+        JsonObject& alert = alerts.createNestedObject();
+
+        alert["name"] = request["name"];
+        alert["email"] = request["email"];
+
+        //write the alerts back to the file
+        file.rewind();
+
+        //insert the new json
+        alerts.printTo(file);
+
+        //close the file
+        file.close();
+
+        sendHTTPStatusCode(web, 204);
+
+      } else {
+        sendHTTPStatusCode(web, 500);
+      }
+      
+    } else {
+      //send the session "set-cookie" header
+      sendHTTPStatusCode(web, 500);
+    }
+  }
+
+  //send the session "set-cookie" header
+  sendSessionCookie(web);
+  sendHTTPHeader(web, F("Content-Type"), F("application/json"));
+  web.endHeaders();
+
+  return true;
+}
+
 //handler for the url GET "/" "*"
 bool fileHandler(FishinoWebServer &web) {
   //filename of the file that we need to serve
@@ -645,9 +824,6 @@ bool fileHandler(FishinoWebServer &web) {
 //---------------- WEBSERVER UTILS FUNCTIONS ----------------
 // sends a file to client
 void sendFile(FishinoWebServer& web, const char* filename, const __FlashStringHelper *contentType) {
-  //start the session handling
-  startSession(web);
-
   //getting the client
   FishinoClient& client = web.getClient();
   
@@ -812,6 +988,10 @@ void initWebServer() {
   //getting data
   web.addHandler(F("/data"), FishinoWebServer::GET, &dataHandler);
   web.addHandler(F("/data/d7s"), FishinoWebServer::GET, &dataD7SHandler);
+  //alerts handling
+  web.addHandler(F("/alert/list"), FishinoWebServer::GET, &alertListHandler);
+  web.addHandler(F("/alert/new"), FishinoWebServer::POST, &alertNewHandler);
+  web.addHandler(F("/alert/delete"), FishinoWebServer::POST, &alertDeleteHandler);
   //file handler
   web.addHandler(F("/" "*"), FishinoWebServer::GET, &fileHandler);
 
