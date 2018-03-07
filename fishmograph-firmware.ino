@@ -4,15 +4,30 @@
 #include <FishinoRTC.h>
 #include <ArduinoJson.h>
 
+//---------------- DEBUG ----------------
+//comment this to disable all debug information
+#define DEBUG
+
+#ifdef DEBUG
+  #define DEBUG_PRINT(x) Serial.print(x);
+  #define DEBUG_PRINTLN(x) Serial.println(x);
+#else
+  #define DEBUG_PRINT(x)
+  #define DEBUG_PRINTLN(x)
+#endif
+
 //---------------- CONSTANTS ----------------
+//WEBAPP PASSWORD
+#define WEBAPP_PASSWORD "fish123";
+
 //NETWORKS
 //put here your network settings
-#define MY_SSID "RavanelloWifi" //ssid
-#define MY_PASS "ravanello987654321" //password
+#define MY_SSID "Casa" //ssid
+#define MY_PASS "alepas1105119" //password
 
 //IP ADDRESS CONSTANTS
-#define IPADDR  192, 168,   1, 200 //ip of the server
-#define GATEWAY 192, 168,   1, 254 //gateway of the network
+#define IPADDR  192, 168,   0, 200 //ip of the server
+#define GATEWAY 192, 168,   0, 1 //gateway of the network
 #define NETMASK 255, 255, 255, 0 //netmask of the network
 
 //SD CARD
@@ -23,18 +38,19 @@
 #endif
 
 //D7S INTERRUPT PINS
-#define INT1_PIN 2 //interrupt pin INT1 of D7S attached to pin 2 of Arduino
-#define INT2_PIN 3 //interrupt pin INT2 of D7S attached to pin 3 of Arduino
+#define INT1_PIN 3 //interrupt pin INT1 of D7S attached to pin 2 of Arduino
+#define INT2_PIN 5 //interrupt pin INT2 of D7S attached to pin 3 of Arduino
 
 //TIME FOR WHICH THE NOTIFICATION IS VALID
 #define NOTIFICATION_VALIDITY_TIME 120000 //time in ms (2 minutes)
 
 typedef enum status {
-   NONE = 0,
-   EARTHQUAKE_STARTED = 1,
-   EARTHQUAKE_ENDED = 2,
-   SHUTOFF_OCCURS = 3,
-   COLLAPSE_OCCURS = 4
+  STATUS_ERROR = -1,
+  STATUS_OK = 1,
+  EARTHQUAKE_OCCURING = 2,
+  EARTHQUAKE_ENDED = 3,
+  SHUTOFF_OCCURRED = 4,
+  COLLAPSE_OCCURRED = 5
 };
 
 //---------------- VARIABLES ----------------
@@ -59,43 +75,105 @@ FishinoWebServer web(80);
 //earthquake handling variables
 //earthquake data current/last earthquake
 struct earthquake_t {
-  long timestamp; //timestamp at which the eathquake started
-  uint8_t events; //first bit earyhquake occuring, second bit earthquake stopped, third bit shutoff, fourth bit collapse
-  long shutoffTimestamp; //shutoff timestamp
-  long collapseTimestamp; //shutoff timestamp
-  uint8_t notifications; //first bit eathquake started, second bit earthquake ended, third bit shutoff, fouth bit collapse
-  long endingTime; //millis at which the earthquake ended
+  // Events
+  struct events_t {
+    bool occuring; // Earthquake started
+    bool end; //earthquake ended
+    bool shutoff; //shutoff occured
+    bool collapse; //collapse occured
+  } events;
+  // Earthquake information
+  long start_timestamp; //timestamp at which the eathquake started
+  long end_timestamp; //timestamp at which the earthquake ended
+  long shutoff_timestamp; //timestamp at which the shutoff event occured
+  long collapse_time; //timestamp at which the shutoff event occured
 } earthquake;
+
+//Notifications
+struct notification_t {
+  // Web notifications
+  struct status_t {
+    bool occuring; // Earthquake started
+    bool end; //earthquake ended
+    bool shutoff; //shutoff occured
+    bool collapse; //collapse occured
+  };
+  struct status_t web;
+} notifications;
 
 //---------------- D7S EVENTS HANDLERS ----------------
 //handler for the START_EARTHQUAKE D7S event
 void startEarthquakeHandler() {  
-  earthquake.timestamp = RTC.now().getUnixTime(); //save the timestamp
-  //notfications
-  earthquake.events = 0x01; //earthquake started
-  earthquake.notifications = 0x00; //reset notifications
-  //reset the events shutoff/collapse memorized into the D7S
+  // A new earthquake is detected
+  // We need to clear notifications and events status and register the timestamp
+  
+  //timestamp of the earthquake start
+  earthquake.start_timestamp = RTC.now().getUnixTime(); //save the timestamp
+ 
+  //reset earthquake events
+  earthquake.events.occuring = true;
+  earthquake.events.end = false;
+  earthquake.events.shutoff = false;
+  earthquake.events.collapse = false;
+
+  //reset web notification
+  notifications.web.occuring = false;
+  notifications.web.end = false;
+  notifications.web.shutoff = false;
+  notifications.web.collapse = false;
+
+  //reset the events of the D7S
   D7S.resetEvents();
 
-  Serial.println(F("--- EARTHQUAKE STARTED ---"));
+  //debug information
+  DEBUG_PRINTLN(F("--- EARTHQUAKE STARTED ---"));
 }
 
 //handler for the END_EARTHQUAKE D7S event
 void endEarthquakeHandler(float si, float pga, float temperature) {
-  //saving millis at which the earthquake ended (used in the notifications)
-  earthquake.endingTime = millis();
-  earthquake.events |= 0x02; //earthquake ended
-  earthquake.events &= 0x0E; //earthquake is not occuring because it's ended
+  // The earthquake is ended
+  // We need to save the data to the data file and save the timestamp
+
+  //saving the timestamp at which the earthquakes is ended
+  earthquake.end_timestamp = RTC.now().getUnixTime();
+
+  //setting the events
+  earthquake.events.end = true; // earthquake ended
+  earthquake.events.occuring = false; //earthquake is not occuring because it's ended
+
+  //preparing the  detection to write to the SD card
+  //parsing the request
+  StaticJsonBuffer<200> jsonBuffer;
+  JsonObject& detection = jsonBuffer.createObject();
+
+  detection["start"] = earthquake.start_timestamp; //start timestamp
+  detection["end"] = earthquake.start_timestamp; //end timestamp
+  detection["si"] = si; //si detected
+  detection["pga"] = pga; //pga detected
+  detection["temperature"] = temperature; //temperature at detection
+  //if the shutoff event is occured
+  if (earthquake.events.shutoff) {
+    detection["shutoff"] = earthquake.shutoff_timestamp;
+  } else {
+    detection["shutoff"] = 0;
+  }
+  //if the collapse event is occured
+  if (earthquake.events.collapse) {
+    detection["collapse"] = earthquake.collapse_time;
+  } else {
+    detection["collapse"] = 0;
+  }
+
+
   //disable interrupt to prevent corrupting the file
   noInterrupts();
+
   //position to last data
   unsigned long position = 0;
   //open file
   if (!file.open(&root, "data.txt", O_READ | O_WRITE)) {
     file.open(&root, "data.txt", O_CREAT | O_WRITE | O_TRUNC);
   }
-
-  Serial.println("0");
 
   //counting the data
   char c;
@@ -104,68 +182,50 @@ void endEarthquakeHandler(float si, float pga, float temperature) {
       position = file.curPosition();
     }
   }
-
-  Serial.println("1");
   
-  if (position == 0) { //if is the first data
+  //if is the first data
+  if (position == 0) {
     file.rewind();
-    file.print(F("[{\"tmsp\": "));
-  } else { //there are other data
+    file.print(F("["));
+
+  //there are other data
+  } else {
     //reset file to the last postion
     file.seekSet(position);
-    file.print(F(", {\"tmsp\": "));
+    file.print(F(", "));
   }
 
-  Serial.println("2");
+  detection.printTo(file);
+  file.print(F("]"));
 
-  file.print(earthquake.timestamp);
-  file.print(F(", \"si\": "));
-  file.print(si);
-  file.print(F(", \"pga\": "));
-  file.print(pga);
-  file.print(F(", \"temp\": "));
-  file.print(temperature);
-  file.print(F(", \"shut\": "));
-  if ((earthquake.events & 0x04) >> 2) {
-    file.print(earthquake.shutoffTimestamp);
-  } else {
-    file.print(0);
-  }
-  file.print(F(", \"coll\": "));
-  if ((earthquake.events & 0x08) >> 3) {
-    file.print(earthquake.collapseTimestamp);
-  } else {
-    file.print(0);
-  }
-  file.print(F("}]"));
-
-  Serial.println("3");
-
-  //chiudo il file
+  //close the file
   file.close();
-
-  Serial.println("4");
 
   //enable interrupts
   interrupts();
 
-  Serial.println(F("--- EARTHQUAKE ENDED ---"));
+  //debug information
+  DEBUG_PRINTLN(F("--- EARTHQUAKE ENDED ---"));
 }
 
 //handler for the SHUTOFF D7S event
 void shutoffHandler() {
-  Serial.println(F("--- SHUTOFF ---"));
-  //saving the shutoff event
-  earthquake.events |= 0x04;
-  earthquake.shutoffTimestamp = RTC.now().getUnixTime();
+  // Saving the shutoff event
+  earthquake.shutoff_timestamp = RTC.now().getUnixTime();
+  earthquake.events.shutoff = true;
+
+  //debug information
+  DEBUG_PRINTLN(F("--- SHUTOFF ---"));
 } 
 
 //handler for the COLLAPSE D7S event
 void collapseHandler() {
-  Serial.println(F("--- COLLAPSE ---"));
-  //saving the collapse event
-  earthquake.events |= 0x08;
-  earthquake.collapseTimestamp = RTC.now().getUnixTime();
+  // Saving the shutoff event
+  earthquake.collapse_time = RTC.now().getUnixTime();
+  earthquake.events.collapse = true;
+  
+  //debug information
+  DEBUG_PRINTLN(F("--- COLLAPSE ---"));
 }
 
 //---------------- SESSION AND USER HANDLERS ----------------
@@ -180,8 +240,13 @@ void startSession(FishinoWebServer &web) {
   }  
   //check if the value of the cookie is different from the session ID we are currently handling
   if (cookieSessionValue != sessionID || cookieSessionValue < 0) {
-    //we need to generate a new sessionID
-    sessionID = RTC.now().getUnixTime(); //using timestamp for uniqness
+    // If the browser sent a valid cookie
+    if (cookieSessionValue > 0) {
+      sessionID = cookieSessionValue;
+    } else {
+      //we need to generate a new sessionID
+      sessionID = RTC.now().getUnixTime(); //using timestamp for uniqness
+    }
     //reset isUserLogged session variable
     isUserLogged = false;
   }
@@ -197,19 +262,18 @@ void sendSessionCookie(FishinoWebServer &web) {
 
 //get the user password from a file
 char *getUserPassword() {
-  return "fishmograph123";
+  return WEBAPP_PASSWORD;
 }
 
 //---------------- WEB SERVER HANDLERS ----------------
 //handler for the url GET "/"
 bool indexHandler(FishinoWebServer &web) {
-  sendFile(web, "index.htm");
+  sendFile(web, "index.htm", NULL);
   return true;
 }
 
 //handler for the url POST "/login"
 bool loginHandler(FishinoWebServer &web) {
-  Serial.println("loginHandler");
   //start the session handling
   startSession(web);
   //if the user is already autenticated we do not parse the body of the request
@@ -229,15 +293,15 @@ bool loginHandler(FishinoWebServer &web) {
 
     //parsing the request
     StaticJsonBuffer<200> jsonBuffer;
-    JsonObject& root = jsonBuffer.parseObject(body);
+    JsonObject& request = jsonBuffer.parseObject(body);
 
     //the body of the request is incorrect
-    if (!root.success() || !root.containsKey("password")) {
+    if (!request.success() || !request.containsKey("password")) {
       sendHTTPStatusCode(web, 400);
 
     } else {
       //getting the password from the body
-      const char *password = root["password"];
+      const char *password = request["password"];
 
       //if the password is correct
       if (strcmp(password, getUserPassword()) == 0) {
@@ -266,293 +330,435 @@ bool loginHandler(FishinoWebServer &web) {
 bool logoutHandler(FishinoWebServer &web) {
   //start the session handling
   startSession(web);
-  //if the user is logged
-  if (isUserLogged) {
-    isUserLogged = false;
-    sendHTTPStatusCode(web, 204);
-  
-  //if the user is not logged
-  } else {
-    sendHTTPStatusCode(web, 401);
-  }
-
+  //loggin out the user
+  isUserLogged = false;
+  //send that the procedure goes correctly
+  sendHTTPStatusCode(web, 204);
   //send the session "set-cookie" header
   sendSessionCookie(web);
   web.endHeaders();
-
   return true;
 }
 
 //handler for the url GET "/status"
 bool statusHandler(FishinoWebServer &web) {
+  //start the session handling
+  startSession(web);
+
+  //if the user if not logged we send a 401 - Unauthorized
+  if (!isUserLogged) {
+    sendHTTPStatusCode(web, 401);
+    sendSessionCookie(web);
+    web.endHeaders();
+    return true;
+  }
+
   //send headers
   sendHTTPStatusCode(web, 200);
   sendHTTPHeader(web, F("Content-Type"), F("application/json"));
+  sendSessionCookie(web);
   web.endHeaders();
+
+  //prepare the body of the response
+  StaticJsonBuffer<200> jsonBuffer;
+  JsonObject& response = jsonBuffer.createObject();
+
+  //earthquake is occuring and the notifications has not been sent before
+  if (earthquake.events.occuring && !notifications.web.occuring) {
+    response["status"] = (int) EARTHQUAKE_OCCURING;
+    response["timestamp"] = earthquake.start_timestamp;
+    //setting that the notification has been sent
+    notifications.web.occuring = true;
+  
+  //earthquake is occuring and the shutoff notifications has not been sent before
+  } else if (earthquake.events.occuring && earthquake.events.shutoff && !notifications.web.shutoff) {
+    response["status"] = (int) SHUTOFF_OCCURRED;
+    response["timestamp"] = earthquake.shutoff_timestamp;
+    //setting that the notification has been sent
+    notifications.web.shutoff = true;
+
+  //earthquake is occuring and the collapse notifications has not been sent before
+  } else if (earthquake.events.occuring && earthquake.events.collapse && !notifications.web.collapse) {
+    response["status"] = (int) COLLAPSE_OCCURRED;
+    response["timestamp"] = earthquake.collapse_time;
+    //setting that the notification has been sent
+    notifications.web.collapse = true;
+  
+  //earthquake is endend and the notifications has not been sent before and there is still time to sent it
+  } else if (earthquake.events.end && (RTC.now().getUnixTime() - earthquake.end_timestamp) <= NOTIFICATION_VALIDITY_TIME && !notifications.web.end) {
+    response["status"] = (int) EARTHQUAKE_ENDED;
+    response["timestamp"] = earthquake.end_timestamp;
+    //setting that the notification has been sent
+    notifications.web.end = true;
+  
+  } else {
+    response["status"] = (int) STATUS_OK;
+  }
+
   //getting the client
   FishinoClient& client = web.getClient();
 
-  //response in JSON
-  client.print(F("{\"status\": "));
-
-  //earthquake occuring and the notifications has not been sent before
-  if(earthquake.events & 0x01 && !(earthquake.notifications & 0x01)) {
-    earthquake.notifications |= 0x01; //notifications sent
-    //response
-    client.print(EARTHQUAKE_STARTED);
-    client.print(F(", \"tmsp\": "));
-    client.print(earthquake.timestamp);
-  
-  //earthquake occuring and the shutoff notifications has not been sent before
-  } else if (earthquake.events & 0x01 && earthquake.events & 0x04 && !(earthquake.notifications & 0x04)) { //SHTOFF
-    earthquake.notifications |= 0x04; //notifications sent
-    //response
-    client.print(SHUTOFF_OCCURS);
-    client.print(F(", \"tmsp\": "));
-    client.print(earthquake.shutoffTimestamp);
-
-  //earthquake occuring and the collapse notifications has not been sent before
-  } else if (earthquake.events & 0x01 && earthquake.events & 0x08 && !(earthquake.notifications & 0x08)) { //COLLAPSE
-    earthquake.notifications |= 0x08; //notifications sent
-    //response
-    client.print(COLLAPSE_OCCURS);
-    client.print(F(", \"tmsp\": "));
-    client.print(earthquake.collapseTimestamp);
-
-  //earthquake endend and the notifications has not been sent before and there is still time to sent it
-  } else if (earthquake.events & 0x02 && (millis() - earthquake.endingTime) <= NOTIFICATION_VALIDITY_TIME && !(earthquake.notifications & 0x02)) {
-    earthquake.notifications |= 0x02; //notifications sent
-    client.print(EARTHQUAKE_ENDED);  
-  //no earthquakes
-  } else {
-    client.print(NONE);
-  }
-  
-  //close the response
-  client.println(F("}\n"));
+  //send the response
+  response.printTo(client);
+  //close the body
+  client.println();
 
   return true;
 }
 
 //handler for the url POST "/settings/initialize"
 bool settingsInitializeHandler(FishinoWebServer &web) {
-  //send headers
-  sendHTTPStatusCode(web, 200);
-  sendHTTPHeader(web, F("Content-Type"), F("application/json"));
-  web.endHeaders();
-  //getting the client
-  FishinoClient& client = web.getClient();
+  //start the session handling
+  startSession(web);
 
-  //if there are no earthquakes occuring
-  if (earthquake.events & 0x01) {
-    Serial.println(F("Earthquake occuring!"));
-    client.print(F("{\"status\": 2}\n"));
+  //if the user if not logged we send a 401 - Unauthorized
+  if (!isUserLogged) {
+    sendHTTPStatusCode(web, 401);
+    sendSessionCookie(web);
+    web.endHeaders();
     return true;
   }
 
-  //disable D7S interrupt handling
-  D7S.stopInterruptHandling();
+  //send headers
+  sendHTTPStatusCode(web, 200);
+  sendHTTPHeader(web, F("Content-Type"), F("application/json"));
+  sendSessionCookie(web);
+  web.endHeaders();
 
-  Serial.print(F("Initializing..."));
-  //start the initial installation procedure
-  D7S.initialize();
-  //wait until the D7S is ready (the initializing process is ended)
-  while (!D7S.isReady()) {
-    Serial.print(F("."));
-    delay(500);
+  //prepare the body of the response
+  StaticJsonBuffer<200> jsonBuffer;
+  JsonObject& response = jsonBuffer.createObject();
+
+  //if an earthquake is occuring we cannot initialize the sensor
+  if (earthquake.events.occuring) {
+    response["status"] = (int) EARTHQUAKE_OCCURING;
+  
+  } else {
+    //disable D7S interrupt handling
+    D7S.stopInterruptHandling();
+    DEBUG_PRINT(F("Initializing..."));
+    //start the initial installation procedure
+    D7S.initialize();
+    //wait until the D7S is ready (the initializing process is ended)
+    while (!D7S.isReady()) {
+      DEBUG_PRINT(F("."));
+      delay(500);
+    }
+    DEBUG_PRINTLN(F("OK"));
+    //enabling D7S interrupt handling
+    D7S.startInterruptHandling();
+
+    response["status"] = (int) STATUS_OK;
   }
-  Serial.println(F("OK"));
 
-  client.print(F("{\"status\": 0}\n"));
+  //getting the client
+  FishinoClient& client = web.getClient();
 
-  //enabling D7S interrupt handling
-  D7S.startInterruptHandling();
+  //send the response
+  response.printTo(client);
+  //close the body
+  client.println();
 
   return true;
 }
 
 //handler for the url POST "/settings/selftest"
 bool settingsSelftestHandler(FishinoWebServer &web) {
-  //send headers
-  sendHTTPStatusCode(web, 200);
-  sendHTTPHeader(web, F("Content-Type"), F("application/json"));
-  web.endHeaders();
-  //getting the client
-  FishinoClient& client = web.getClient();
+  //start the session handling
+  startSession(web);
 
-  //if there are no earthquakes occuring
-  if (earthquake.events & 0x01) {
-    Serial.println(F("Earthquake occuring!"));
-    client.print(F("{\"status\": 2}\n"));
+  //if the user if not logged we send a 401 - Unauthorized
+  if (!isUserLogged) {
+    sendHTTPStatusCode(web, 401);
+    sendSessionCookie(web);
+    web.endHeaders();
     return true;
   }
 
-  //disable D7S interrupt handling
-  D7S.stopInterruptHandling();
+  //send headers
+  sendHTTPStatusCode(web, 200);
+  sendHTTPHeader(web, F("Content-Type"), F("application/json"));
+  sendSessionCookie(web);
+  web.endHeaders();
 
-  Serial.print(F("Selftest..."));
-  D7S.selftest();
-  //wait until the D7S selftest is ended
-  while (!D7S.isReady()) {
-    Serial.print(F("."));
-    delay(500);
-  }
+  //prepare the body of the response
+  StaticJsonBuffer<200> jsonBuffer;
+  JsonObject& response = jsonBuffer.createObject();
 
-  //response in JSON
-  client.print(F("{\"status\": "));
-
-  //checking the result
-  if (D7S.getSelftestResult() == D7S_OK) {
-    //send it's all ok
-    client.print(0);
-    Serial.println(F("OK"));
+  //if an earthquake is occuring we cannot initialize the sensor
+  if (earthquake.events.occuring) {
+    response["status"] = (int) EARTHQUAKE_OCCURING;
+  
   } else {
-    //send there is an error
-    client.print(1);
-    Serial.println(F("ERROR"));
-  }
-  //closing the message to the client
-  client.println(F("}"));
+    //disable D7S interrupt handling
+    D7S.stopInterruptHandling();
 
-  //enabling D7S interrupt handling
-  D7S.startInterruptHandling();
+    DEBUG_PRINT(F("Selftest..."));
+    D7S.selftest();
+    //wait until the D7S selftest is ended
+    while (!D7S.isReady()) {
+      DEBUG_PRINT(F("."));
+      delay(500);
+    }
+    //checking the result
+    if (D7S.getSelftestResult() == D7S_OK) {
+      response["status"] = (int) STATUS_OK;
+      DEBUG_PRINTLN(F("OK"));
+    } else {
+      response["status"] = (int) STATUS_ERROR;
+      DEBUG_PRINTLN(F("ERROR"));
+    }
+
+    //enabling D7S interrupt handling
+    D7S.startInterruptHandling();
+  }
+
+  //getting the client
+  FishinoClient& client = web.getClient();
+
+  //send the response
+  response.printTo(client);
+  //close the body
+  client.println();
 
   return true;
 }
 
 //handler for the url POST "/settings/clear/d7s"
 bool settingsClearD7SHandler(FishinoWebServer &web) {
+  //start the session handling
+  startSession(web);
+
+  //if the user if not logged we send a 401 - Unauthorized
+  if (!isUserLogged) {
+    sendHTTPStatusCode(web, 401);
+    sendSessionCookie(web);
+    web.endHeaders();
+    return true;
+  }
+
   //send headers
   sendHTTPStatusCode(web, 200);
   sendHTTPHeader(web, F("Content-Type"), F("application/json"));
+  sendSessionCookie(web);
   web.endHeaders();
-  //getting the client
-  FishinoClient& client = web.getClient();
 
   //clearing the memory of D7S
   D7S.clearEarthquakeData();
 
-  client.print(F("{\"status\": 0}\n"));
+  //prepare the body of the response
+  StaticJsonBuffer<200> jsonBuffer;
+  JsonObject& response = jsonBuffer.createObject();
+
+  // prepare the response
+  response["status"] = (int) STATUS_OK;
+
+  //getting the client
+  FishinoClient& client = web.getClient();
+
+  //send the response
+  response.printTo(client);
+  //close the body
+  client.println();
+
 
   return true;
 }
 
 //handler for the url POST "/settings/clear/data"
 bool settingsClearDataHandler(FishinoWebServer &web) {
+  //start the session handling
+  startSession(web);
+
+  //if the user if not logged we send a 401 - Unauthorized
+  if (!isUserLogged) {
+    sendHTTPStatusCode(web, 401);
+    sendSessionCookie(web);
+    web.endHeaders();
+    return true;
+  }
+
   //send headers
   sendHTTPStatusCode(web, 200);
   sendHTTPHeader(web, F("Content-Type"), F("application/json"));
+  sendSessionCookie(web);
   web.endHeaders();
-  //getting the client
-  FishinoClient& client = web.getClient();
 
   //creating a new file data.txt
   file.open(&root, "data.txt", O_CREAT | O_WRITE | O_TRUNC);
   file.print(F("[]"));
   file.close();
 
-  client.print(F("{\"status\": 0}\n"));
+  //prepare the body of the response
+  StaticJsonBuffer<200> jsonBuffer;
+  JsonObject& response = jsonBuffer.createObject();
+
+  // prepare the response
+  response["status"] = (int) STATUS_OK;
+
+  //getting the client
+  FishinoClient& client = web.getClient();
+
+  //send the response
+  response.printTo(client);
+  //close the body
+  client.println();
 
   return true;
 }
 
 //handler for the url GET "/data/earthquakes"
 bool dataHandler(FishinoWebServer &web) {
+  //start the session handling
+  startSession(web);
+
+  //if the user if not logged we send a 401 - Unauthorized
+  if (!isUserLogged) {
+    sendHTTPStatusCode(web, 401);
+    sendSessionCookie(web);
+    web.endHeaders();
+    return true;
+  }
+
   //disable interrupt to prevent corrupting the file
   noInterrupts();
   //sending the file
-  sendFile(web, "data.txt");
+  sendFile(web, "data.txt", F("application/json"));
   //enable interrupts
   interrupts();
   return true;
 }
 
-//handler for the url GET "/data/d7s/lastest"
+//handler for the url GET "/data/d7s"
 bool dataD7SHandler(FishinoWebServer &web) {
+  //start the session handling
+  startSession(web);
+
+  //if the user if not logged we send a 401 - Unauthorized
+  if (!isUserLogged) {
+    sendHTTPStatusCode(web, 401);
+    sendSessionCookie(web);
+    web.endHeaders();
+    return true;
+  }
+
   //send headers
   sendHTTPStatusCode(web, 200);
   sendHTTPHeader(web, F("Content-Type"), F("application/json"));
+  sendSessionCookie(web);
   web.endHeaders();
+
+  //prepare the body of the response
+  StaticJsonBuffer<1000> jsonBuffer;
+  JsonArray& response = jsonBuffer.createArray();
+
+  //ranked data
+  JsonArray& ranked = response.createNestedArray();
+
+  for (int i = 0; i < 5; i++) {
+    JsonObject& detection = ranked.createNestedObject();
+
+    detection["si"] = D7S.getRankedSI(i);
+    detection["pga"] = D7S.getRankedPGA(i);
+    detection["temperature"] = D7S.getRankedTemperature(i);
+  }
+
+  //lastest data
+  JsonArray& lastest = response.createNestedArray();
+
+  for (int i = 0; i < 5; i++) {
+    JsonObject& detection = lastest.createNestedObject();
+
+    detection["si"] = D7S.getLastestSI(i);
+    detection["pga"] = D7S.getLastestPGA(i);
+    detection["temperature"] = D7S.getLastestTemperature(i);
+  }
+
+
   //getting the client
   FishinoClient& client = web.getClient();
 
-  client.print(F("[["));
-  for (int i = 0; i < 5; i++) {
-    client.print(F("{\"si\": "));
-    client.print(D7S.getRankedSI(i));
-    client.print(F(", \"pga\": "));
-    client.print(D7S.getRankedPGA(i));
-    client.print(F(", \"temp\": "));
-    client.print(D7S.getRankedTemperature(i));
-    client.print(F("}"));
-    if (i != 4) {
-      client.print(F(", "));
-    }
-  }
-  client.print(F("],["));
-  for (int i = 0; i < 5; i++) {
-    client.print(F("{\"si\": "));
-    client.print(D7S.getLastestSI(i));
-    client.print(F(", \"pga\": "));
-    client.print(D7S.getLastestPGA(i));
-    client.print(F(", \"temp\": "));
-    client.print(D7S.getLastestTemperature(i));
-    client.print(F("}"));
-    if (i != 4) {
-      client.print(F(", "));
-    }
-  }
-  client.print(F("]]\n"));
+  //send the response
+  response.printTo(client);
+  //close the body
+  client.println();
 
   return true;
-  
 }
 
 //handler for the url GET "/" "*"
 bool fileHandler(FishinoWebServer &web) {
-  String filename = web.getFileFromPath(web.getPath());
-  sendFile(web, filename.c_str());
+  //filename of the file that we need to serve
+  const char *filename = web.getFileFromPath(web.getPath()).c_str();
+
+  sendFile(web, filename, NULL);
+
   return true;
 }
 
 //---------------- WEBSERVER UTILS FUNCTIONS ----------------
 // sends a file to client
-void sendFile(FishinoWebServer& web, const char* filename) {
+void sendFile(FishinoWebServer& web, const char* filename, const __FlashStringHelper *contentType) {
+  //start the session handling
+  startSession(web);
+
+  //getting the client
+  FishinoClient& client = web.getClient();
+  
+  // if the filename is not valid
   if (!filename) {
     sendHTTPStatusCode(web, 404);
+    sendSessionCookie(web);
     web.endHeaders();
-    web << F("Could not parse URL");
+    client.println(F("Could not parse URL"));
+    client.println();
+    DEBUG_PRINTLN("Could not parse URL");
+    return;
+  }
+
+  //if the file doesn't exists
+  if (!file.open(&root, filename, O_READ)) {
+    sendHTTPStatusCode(web, 404);
+    sendSessionCookie(web);
+    web.endHeaders();
+    client.print(F("Could not find file: "));
+    client.println(filename);
+    client.println();
+    DEBUG_PRINT(F("Could not find file: "));
+    DEBUG_PRINTLN(filename);
+    return;
+  }
+
+  //the file exists and can be sent
+  sendHTTPStatusCode(web, 200);
+  sendSessionCookie(web);
+
+  //svg type
+  if (contentType != NULL) {
+    sendHTTPHeader(web, F("Content-Type"), contentType);
+
+  } else if (strstr(filename, ".SVG") != NULL) {
+    sendHTTPHeader(web, F("Content-Type"), F("image/svg+xml"));
+    sendHTTPHeader(web, F("Cache-Control"), F("public, max-age=900"));
+
+  //other types
   } else {
-    sendHTTPStatusCode(web, 200);
+    FishinoWebServer::MimeType mimeType = web.getMimeTypeFromFilename(filename);
+    web.sendContentType(mimeType);
 
-    Serial.print(F("Serving: "));
-    Serial.println(filename);
-
-    //svg type
-    if (strstr(filename, ".SVG") != NULL) {
-      web.sendContentType(F("image/svg+xml"));
-      web << F("Cache-Control:public, max-age=900\r\n");
-
-    //other types
-    } else {
-      FishinoWebServer::MimeType mimeType = web.getMimeTypeFromFilename(filename);
-      web.sendContentType(mimeType);
-
-      if(mimeType == FishinoWebServer::MIMETYPE_GIF ||
-         mimeType == FishinoWebServer::MIMETYPE_JPG ||
-         mimeType == FishinoWebServer::MIMETYPE_PNG ||
-         mimeType == FishinoWebServer::MIMETYPE_ICO) {
-        web << F("Cache-Control:public, max-age=900\r\n");
-      }
-    }
-    web.endHeaders();
-    if (file.open(&root, filename, O_READ)) {
-      web.sendFile(file);
-      file.close();
-    } else {
-      web << F("Could not find file: ") << filename << "\n";
+    if (mimeType == FishinoWebServer::MIMETYPE_GIF ||
+        mimeType == FishinoWebServer::MIMETYPE_JPG ||
+        mimeType == FishinoWebServer::MIMETYPE_PNG ||
+        mimeType == FishinoWebServer::MIMETYPE_ICO) {
+      sendHTTPHeader(web, F("Cache-Control"), F("public, max-age=900"));
     }
   }
+
+  web.endHeaders();
+  //send the file
+  web.sendFile(file);
+  //close the file
+  file.close();
 }
 
 //auxiliary function to send HTTP headers
@@ -564,7 +770,7 @@ void sendHTTPHeader(FishinoWebServer& web, const __FlashStringHelper *header, co
 }
 
 //auxiliary function to send HTTP headers
-void sendHTTPHeader(FishinoWebServer& web, const __FlashStringHelper *header, const char * value) {
+void sendHTTPHeader(FishinoWebServer& web, const __FlashStringHelper *header, const char *value) {
   FishinoClient client = web.getClient();
   client.print(header);
   client.print(": ");
@@ -583,35 +789,35 @@ void sendHTTPStatusCode(FishinoWebServer& web, uint16_t statusCode) {
 //function to initialize the Fishino board
 void initFishino() {
   //resetting fishino
-  Serial.print(F("Resetting Fishino..."));
+  DEBUG_PRINT(F("Resetting Fishino..."));
   while(!Fishino.reset())
   {
-    Serial.print(F("."));
+    DEBUG_PRINT(F("."));
     delay(500);
   }
-  Serial.println(F("OK"));
+  DEBUG_PRINTLN(F("OK"));
   //Connetiing Fishino to the WiFi
   Fishino.setMode(STATION_MODE);
-  Serial.print(F("Connecting AP..."));
+  DEBUG_PRINT(F("Connecting AP..."));
   while(!Fishino.begin(F(MY_SSID), F(MY_PASS)))
   {
-    Serial.print(F("."));
+    DEBUG_PRINT(F("."));
     delay(500);
   }
-  Serial.println(F("OK"));
+  DEBUG_PRINTLN(F("OK"));
   //setting up the ip configuration
   Fishino.config(ip, gateway, netmask);
   // wait for connection completion
-  Serial.print(("Waiting IP..."));
+  DEBUG_PRINT(("Waiting IP..."));
   while(Fishino.status() != STATION_GOT_IP)
   {
-    Serial.print(F("."));
+    DEBUG_PRINT(F("."));
     delay(500);
   }
-  Serial.println(F("OK"));
+  DEBUG_PRINTLN(F("OK"));
   // print current IP address
-  Serial.print(F("IP address: "));
-  Serial.println(Fishino.localIP());
+  DEBUG_PRINT(F("IP address: "));
+  DEBUG_PRINTLN(Fishino.localIP());
 }
 
 //function to initialize the RTC on board
@@ -624,22 +830,22 @@ void initRTC() {
 //function to initialize the SD card
 void initSD() {
   // initialize the SD card.
-  Serial.print(F("Preparing SD..."));
+  DEBUG_PRINT(F("Preparing SD..."));
   // Pass over the speed and Chip select for the SD card
   if (!card.init(SPI_FULL_SPEED, SD_CS)) {
-    Serial.println(F("FAILED"));
+    DEBUG_PRINTLN(F("FAILED"));
     return;
   // initialize a FAT volume.
   } else if (!volume.init(&card)) {
-    Serial.println(F("VOLUME FAILED"));
+    DEBUG_PRINTLN(F("VOLUME FAILED"));
     return;
   
   } else if (!root.openRoot(&volume)) {
-    Serial.println(F("ROOT FAILED"));
+    DEBUG_PRINTLN(F("ROOT FAILED"));
     return;
   }
 
-  Serial.println("OK");
+  DEBUG_PRINTLN("OK");
 }
 
 //function to initialize the web server
@@ -670,15 +876,15 @@ void initWebServer() {
 //function to initialize the D7S sensor
 void initD7S() {
   //--- STARTING ---
-  Serial.print(F("Starting D7S..."));
+  DEBUG_PRINT(F("Starting D7S..."));
   //start D7S connection
   D7S.begin();
   //wait until the D7S is ready
   while (!D7S.isReady()) {
-    Serial.print(F("."));
+    DEBUG_PRINT(F("."));
     delay(500);
   }
-  Serial.println(F("OK"));
+  DEBUG_PRINTLN(F("OK"));
 
   //--- SETTINGS ---
   //setting the D7S to switch the axis at inizialization time
@@ -689,30 +895,41 @@ void initD7S() {
   D7S.enableInterruptINT1(INT1_PIN);
   D7S.enableInterruptINT2(INT2_PIN);
 
-  //registering event handler
+  // //registering event handler
   D7S.registerInterruptEventHandler(START_EARTHQUAKE, &startEarthquakeHandler); //START_EARTHQUAKE event handler
   D7S.registerInterruptEventHandler(END_EARTHQUAKE, &endEarthquakeHandler); //END_EARTHQUAKE event handler
   D7S.registerInterruptEventHandler(SHUTOFF_EVENT, &shutoffHandler); //SHUTOFF_EVENT event handler
   D7S.registerInterruptEventHandler(COLLAPSE_EVENT, &collapseHandler); //COLLAPSE_EVENT event handler
 
+  DEBUG_PRINTLN(F("Initializing the D7S sensor in 2 seconds. Keep it steady!"));
+  delay(2000);
+
   //--- INITIALIZZAZION ---
-  Serial.println(F("Initializing D7S."));
+  DEBUG_PRINT(F("Initializing D7S."));
   //start the initial installation procedure
   D7S.initialize();
   //wait until the D7S is ready (the initializing process is ended)
   while (!D7S.isReady()) {
-    Serial.print(F("."));
+    DEBUG_PRINT(F("."));
     delay(500);
   }
-  Serial.println(F("OK"));
+  DEBUG_PRINTLN(F("OK"));
 
   //--- RESETTING EVENTS ---
   //reset the events shutoff/collapse memorized into the D7S
   D7S.resetEvents();
 
-  //reset events and notifications of the fishmograph
-  earthquake.events = 0x00; //reset events
-  earthquake.notifications = 0x00; //reset notifications
+  //reset earthquake events
+  earthquake.events.occuring = false;
+  earthquake.events.end = false;
+  earthquake.events.shutoff = false;
+  earthquake.events.collapse = false;
+
+  //reset web notification
+  notifications.web.occuring = false;
+  notifications.web.end = false;
+  notifications.web.shutoff = false;
+  notifications.web.collapse = false;
 
   //--- STARTING INTERRUPT HANDLING ---
   D7S.startInterruptHandling();
@@ -728,18 +945,18 @@ void setup() {
   //init RTC
   initRTC();
   //init SD
-  //initSD();
+  initSD();
   //init the web server
   initWebServer();
   //initialize the D7S sensor
-  //initD7S();
+  initD7S();
 
   
   //the system is initialized, let's start the web server
   web.begin();
 
   //all ready to go
-  Serial.println(F("Ready!\n"));
+  DEBUG_PRINTLN(F("Ready!\n"));
 
 }
 
