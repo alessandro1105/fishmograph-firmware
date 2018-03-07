@@ -569,12 +569,9 @@ bool dataHandler(FishinoWebServer &web) {
     return true;
   }
 
-  //disable interrupt to prevent corrupting the file
-  noInterrupts();
   //sending the file
   sendFile(web, "data.txt", F("application/json"));
-  //enable interrupts
-  interrupts();
+  
   return true;
 }
 
@@ -914,9 +911,6 @@ void saveEarthquakeData() {
       detection["collapse"] = 0;
     }
 
-    //disable interrupt to prevent corrupting the file
-    noInterrupts();
-
     //position to last data
     unsigned long position = 0;
     //open file
@@ -949,9 +943,6 @@ void saveEarthquakeData() {
 
     //close the file
     file.close();
-
-    //enable interrupts
-    interrupts();
 
     //setting that the earthquake data has been saved
     earthquake.saved = true;
