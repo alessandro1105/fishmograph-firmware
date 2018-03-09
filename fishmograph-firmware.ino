@@ -18,7 +18,7 @@
 
 //---------------- CONSTANTS ----------------
 //WEBAPP PASSWORD
-#define WEBAPP_PASSWORD "fish123";
+#define WEBAPP_DEFAULT_PASSWORD "fish123";
 
 //NETWORKS
 //put here your network settings
@@ -211,13 +211,28 @@ void sendSessionCookie(FishinoWebServer &web) {
 
 //get the user password from a file
 char *getUserPassword() {
-  return WEBAPP_PASSWORD;
+
+  //if the password file doesn't exists use the default password
+  if (!file.open(&root, "PASSWORD.TXT", O_READ | O_WRITE)) {
+    return WEBAPP_DEFAULT_PASSWORD;
+  }
+
+  char password[21]; //max password is 20 char
+
+  //read the password from the file
+  int size = file.read(password, 20);
+  password[size] = 0;
+
+  file.close();
+
+  //return the password
+  return password;
 }
 
 //---------------- WEB SERVER HANDLERS ----------------
 //handler for the url GET "/"
 bool indexHandler(FishinoWebServer &web) {
-  sendFile(web, "index.htm", NULL);
+  sendFile(web, "index.htm", NULL, false);
   return true;
 }
 
@@ -286,6 +301,59 @@ bool logoutHandler(FishinoWebServer &web) {
   //send the session "set-cookie" header
   sendSessionCookie(web);
   web.endHeaders();
+  return true;
+}
+
+//change the password
+bool passwordUpdateHandler(FishinoWebServer &web) {
+  //start the session handling
+  startSession(web);
+
+  //if the user if not logged we send a 401 - Unauthorized
+  if (!isUserLogged) {
+    sendHTTPStatusCode(web, 401);
+    sendSessionCookie(web);
+    web.endHeaders();
+    return true;
+  }
+
+  FishinoClient client = web.getClient();
+  //getting the body of the request
+  char body[client.available() +1]; //we create a buffer of the correct size of the body +1 (the null terminator)
+  int i = 0;
+  while (client.available() && i < 300) {
+    body[i++] = (char) client.read();
+  }
+  body[i] = 0;
+
+  //parsing the request
+  StaticJsonBuffer<200> jsonBuffer;
+  JsonObject& request = jsonBuffer.parseObject(body);
+
+  //the body of the request is incorrect
+  if (!request.success() || !request.containsKey("password")) {
+    sendHTTPStatusCode(web, 400);
+
+  } else {
+
+    //get the password from the request
+    const char *password = request["password"];
+
+    //open file
+    file.open(&root, "PASSWORD.TXT", O_CREAT | O_WRITE | O_TRUNC);
+
+    //save the password
+    file.print(password);
+
+    //close the file
+    file.close();
+  }
+
+  //send the session "set-cookie" header
+  sendSessionCookie(web);
+  sendHTTPHeader(web, F("Content-Type"), F("application/json"));
+  web.endHeaders();
+
   return true;
 }
 
@@ -533,8 +601,8 @@ bool settingsClearDataHandler(FishinoWebServer &web) {
   sendSessionCookie(web);
   web.endHeaders();
 
-  //creating a new file data.txt
-  file.open(&root, "data.txt", O_CREAT | O_WRITE | O_TRUNC);
+  //creating a new file DATA.TXT
+  file.open(&root, "DATA.TXT", O_CREAT | O_WRITE | O_TRUNC);
   file.print(F("[]"));
   file.close();
 
@@ -569,8 +637,16 @@ bool dataHandler(FishinoWebServer &web) {
     return true;
   }
 
+  //if the file doesn't exists
+  if (!file.open(&root, "DATA.TXT", O_READ | O_WRITE)) {
+    file.open(&root, "DATA.TXT", O_CREAT | O_WRITE | O_TRUNC);
+    file.print(F("[]"));
+  }
+
+  file.close();
+
   //sending the file
-  sendFile(web, "data.txt", F("application/json"));
+  sendFile(web, "DATA.TXT", F("application/json"), true);
   
   return true;
 }
@@ -645,8 +721,16 @@ bool alertListHandler(FishinoWebServer &web) {
     return true;
   }
 
+  //if the file doesn't exists
+  if (!file.open(&root, "ALERTS.TXT", O_READ | O_WRITE)) {
+    file.open(&root, "ALERTS.TXT", O_CREAT | O_WRITE | O_TRUNC);
+    file.print(F("[]"));
+  }
+
+  file.close();
+
   //sending the file
-  sendFile(web, "alerts.txt", F("application/json"));
+  sendFile(web, "ALERTS.TXT", F("application/json"), true);
   
   return true;
 }
@@ -684,7 +768,7 @@ bool alertDeleteHandler(FishinoWebServer &web) {
   } else {
 
     //open file
-    if (file.open(&root, "alerts.txt", O_READ | O_WRITE)) {
+    if (file.open(&root, "ALERTS.TXT", O_READ | O_WRITE)) {
 
       //read the entire file of the alerts
       char buffer[1024];
@@ -703,7 +787,7 @@ bool alertDeleteHandler(FishinoWebServer &web) {
 
         //close the file and create a new one
         file.close();
-        file.open(&root, "alerts.txt", O_CREAT | O_WRITE | O_TRUNC);
+        file.open(&root, "ALERTS.TXT", O_CREAT | O_WRITE | O_TRUNC);
 
         //insert the new json
         alerts.printTo(file);
@@ -753,7 +837,7 @@ bool alertNewHandler(FishinoWebServer &web) {
   body[i] = 0;
 
   //parsing the request
-  StaticJsonBuffer<200> jsonBuffer;
+  StaticJsonBuffer<400> jsonBuffer;
   JsonObject& request = jsonBuffer.parseObject(body);
 
   //the body of the request is incorrect
@@ -762,45 +846,48 @@ bool alertNewHandler(FishinoWebServer &web) {
 
   } else {
 
-    //open file
-    if (file.open(&root, "alerts.txt", O_READ | O_WRITE)) {
+    //copying name and email from the body of the request
+    char name[41];
+    char email[51];
+    strcpy(name, (const char *) request["name"]);
+    strcpy(email, (const char *) request["email"]);
 
-      //read the entire file of the alerts
-      char buffer[1024];
+    //if the file doesn't exists
+    if (!file.open(&root, "ALERTS.TXT", O_READ | O_WRITE)) {
+      file.open(&root, "ALERTS.TXT", O_CREAT | O_WRITE | O_TRUNC);
+      file.print(F("[]"));
+    }
 
-      //read the file
-      int size = file.read(buffer, 1023);
-      buffer[size] = 0;
+    //read the entire file of the alerts
+    char buffer[1024];
 
-      //interpret json
-      StaticJsonBuffer<1024> jsonBuffer;
-      JsonArray& alerts = jsonBuffer.parseArray(buffer);
+    //read the file
+    int size = file.read(buffer, 1023);
+    buffer[size] = 0;
 
-      if (alerts.success()) {
-        JsonObject& alert = alerts.createNestedObject();
+    //interpret json
+    StaticJsonBuffer<1024> jsonBuffer2;
+    JsonArray& alerts = jsonBuffer2.parseArray(buffer);
 
-        alert["name"] = request["name"];
-        alert["email"] = request["email"];
+    if (alerts.success()) {
+      JsonObject& alert = alerts.createNestedObject();
 
-        //write the alerts back to the file
-        file.rewind();
+      alert["name"] = name;
+      alert["email"] = email;
 
-        //insert the new json
-        alerts.printTo(file);
+      //write the alerts back to the file
+      file.rewind();
 
-        //close the file
-        file.close();
+      //insert the new json
+      alerts.printTo(file);
 
-        sendHTTPStatusCode(web, 204);
-
-      } else {
-        sendHTTPStatusCode(web, 500);
-      }
-      
+      sendHTTPStatusCode(web, 204);
     } else {
-      //send the session "set-cookie" header
       sendHTTPStatusCode(web, 500);
     }
+
+    //close the file
+    file.close();
   }
 
   //send the session "set-cookie" header
@@ -816,14 +903,14 @@ bool fileHandler(FishinoWebServer &web) {
   //filename of the file that we need to serve
   const char *filename = web.getFileFromPath(web.getPath()).c_str();
 
-  sendFile(web, filename, NULL);
+  sendFile(web, filename, NULL, false);
 
   return true;
 }
 
 //---------------- WEBSERVER UTILS FUNCTIONS ----------------
 // sends a file to client
-void sendFile(FishinoWebServer& web, const char* filename, const __FlashStringHelper *contentType) {
+void sendFile(FishinoWebServer& web, const char* filename, const __FlashStringHelper *contentType, bool allowProtectedFile) {
   //getting the client
   FishinoClient& client = web.getClient();
   
@@ -838,8 +925,8 @@ void sendFile(FishinoWebServer& web, const char* filename, const __FlashStringHe
     return;
   }
 
-  //if the file doesn't exists
-  if (!file.open(&root, filename, O_READ)) {
+  //if the file doesn't exists or it's protected
+  if ((!allowProtectedFile && (strcmp(filename, "DATA.TXT") == 0 || strcmp(filename, "ALERTS.TXT") == 0 || strcmp(filename, "PASSWORD.TXT") == 0)) || !file.open(&root, filename, O_READ)) {
     sendHTTPStatusCode(web, 404);
     sendSessionCookie(web);
     web.endHeaders();
@@ -976,6 +1063,7 @@ void initWebServer() {
   //login and logout handlers
   web.addHandler(F("/login"), FishinoWebServer::POST, &loginHandler); //login
   web.addHandler(F("/logout"), FishinoWebServer::POST, &logoutHandler); //logout
+  web.addHandler(F("/password/update"), FishinoWebServer::POST, &passwordUpdateHandler); //change password
   //index handler
   web.addHandler(F("/"), FishinoWebServer::GET, &indexHandler);
   //status handler
@@ -1094,8 +1182,8 @@ void saveEarthquakeData() {
     //position to last data
     unsigned long position = 0;
     //open file
-    if (!file.open(&root, "data.txt", O_READ | O_WRITE)) {
-      file.open(&root, "data.txt", O_CREAT | O_WRITE | O_TRUNC);
+    if (!file.open(&root, "DATA.TXT", O_READ | O_WRITE)) {
+      file.open(&root, "DATA.TXT", O_CREAT | O_WRITE | O_TRUNC);
     }
 
     //counting the data
