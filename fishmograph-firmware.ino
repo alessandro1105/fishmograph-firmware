@@ -3,6 +3,7 @@
 #include <D7S.h>
 #include <FishinoRTC.h>
 #include <ArduinoJson.h>
+#include <SMTPClient.h>
 
 //---------------- DEBUG ----------------
 //comment this to disable all debug information
@@ -53,6 +54,30 @@ typedef enum status {
   COLLAPSE_OCCURRED = 5
 };
 
+
+//--- EMAIL SETTINGS ---
+//uncomment this to enable email notification. You must fill the fields below with your data.
+//#define ENABLE_EMAIL_NOTIFICATION
+
+//SMTP server settings
+//GMAIL
+// You will need a secure client to use Gmail on port 465 because it requires TLS.
+// You also need to enable "less secure apps" from https://myaccount.google.com/lesssecureapps
+#define SMTP_SERVER "smtp.gmail.com"
+#define SMTP_PORT 465
+//SMTP2GO
+// You just need a normal client because the connection to server is not secure
+//#define SMTP_SERVER "mail.smtp2go.com"
+//#define SMTP_PORT 2525
+
+//SMTP AUTH (must be in base64)
+#define SMTP_LOGIN "your email encoded in base64"
+#define SMTP_PASSWD "your password encoded in base64"
+
+//FROM EMAIL
+#define SMTP_FROM_NAME "Fishmograph"
+#define SMTP_FROM_EMAIL "sender@example.ext"
+
 //---------------- VARIABLES ----------------
 //Network
 IPAddress ip(IPADDR);
@@ -86,7 +111,7 @@ struct earthquake_t {
   long start_timestamp; //timestamp at which the eathquake started
   long end_timestamp; //timestamp at which the earthquake ended
   long shutoff_timestamp; //timestamp at which the shutoff event occured
-  long collapse_time; //timestamp at which the shutoff event occured
+  long collapse_timestamp; //timestamp at which the shutoff event occured
   float si;
   float pga;
   float temperature;
@@ -103,7 +128,15 @@ struct notification_t {
     bool collapse; //collapse occured
   };
   struct status_t web;
+  struct status_t email;
 } notifications;
+
+// Use FishinoSecureClient class to create TLS connection
+FishinoSecureClient client;
+
+// Use FishinoClient class to create connection
+//FishinoClient client;
+
 
 //---------------- D7S EVENTS HANDLERS ----------------
 //handler for the START_EARTHQUAKE D7S event
@@ -128,6 +161,12 @@ void startEarthquakeHandler() {
   notifications.web.end = false;
   notifications.web.shutoff = false;
   notifications.web.collapse = false;
+
+  //reset email notification
+  notifications.email.occuring = false;
+  notifications.email.end = false;
+  notifications.email.shutoff = false;
+  notifications.email.collapse = false;
 
   //setting that the current earthquakes is not saved in the sd card
   earthquake.saved = false;
@@ -170,7 +209,7 @@ void shutoffHandler() {
 //handler for the COLLAPSE D7S event
 void collapseHandler() {
   // Saving the shutoff event
-  earthquake.collapse_time = RTC.now().getUnixTime();
+  earthquake.collapse_timestamp = RTC.now().getUnixTime();
   earthquake.events.collapse = true;
   
   //debug information
@@ -397,7 +436,7 @@ bool statusHandler(FishinoWebServer &web) {
   //earthquake is occuring and the collapse notifications has not been sent before
   } else if (earthquake.events.occuring && earthquake.events.collapse && !notifications.web.collapse) {
     response["status"] = (int) COLLAPSE_OCCURRED;
-    response["timestamp"] = earthquake.collapse_time;
+    response["timestamp"] = earthquake.collapse_timestamp;
     //setting that the notification has been sent
     notifications.web.collapse = true;
   
@@ -854,8 +893,9 @@ bool alertNewHandler(FishinoWebServer &web) {
 
     //if the file doesn't exists
     if (!file.open(&root, "ALERTS.TXT", O_READ | O_WRITE)) {
-      file.open(&root, "ALERTS.TXT", O_CREAT | O_WRITE | O_TRUNC);
+      file.open(&root, "ALERTS.TXT", O_CREAT | O_READ| O_WRITE | O_TRUNC);
       file.print(F("[]"));
+      file.rewind();
     }
 
     //read the entire file of the alerts
@@ -991,6 +1031,130 @@ void sendHTTPHeader(FishinoWebServer& web, const __FlashStringHelper *header, co
 void sendHTTPStatusCode(FishinoWebServer& web, uint16_t statusCode) {
   FishinoClient client = web.getClient();
   client << F("HTTP/1.1 ") << statusCode << F(" OK\r\n");
+}
+
+//---------------- EMAIL FUNCTIONS ----------------
+void sendEmailNotifications() {
+
+  long now = RTC.now().getUnixTime();
+
+  //check if there are notification to be sent
+  if ((earthquake.events.occuring && !notifications.email.occuring) && (now - earthquake.start_timestamp) <= NOTIFICATION_VALIDITY_TIME ||
+      (earthquake.events.occuring && earthquake.events.shutoff && !notifications.email.shutoff) && (now - earthquake.shutoff_timestamp) <= NOTIFICATION_VALIDITY_TIME ||
+      (earthquake.events.occuring && earthquake.events.collapse && !notifications.email.collapse) && (now - earthquake.collapse_timestamp) <= NOTIFICATION_VALIDITY_TIME ||
+      (earthquake.events.end && !notifications.email.end) && (now - earthquake.end_timestamp) <= NOTIFICATION_VALIDITY_TIME) {
+
+    SMTPClient smtp(client, SMTP_SERVER, SMTP_PORT);
+    // Setting the AUTH LOGIN information
+    smtp.setAuthLogin(SMTP_LOGIN, SMTP_PASSWD);
+
+    // Creating an email container
+    Mail mail;
+
+    // Compiling the email
+    mail.from(SMTP_FROM_EMAIL, SMTP_FROM_NAME);
+
+
+    //if the file doesn't exists
+    if (!file.open(&root, "ALERTS.TXT", O_READ)) {
+      file.open(&root, "ALERTS.TXT", O_CREAT | O_WRITE | O_TRUNC);
+      file.print(F("[]"));
+      file.close();
+      return; //no alerts
+    }
+
+    //read the entire file of the alerts
+    char buffer[1024];
+
+    //read the file
+    int size = file.read(buffer, 1023);
+    buffer[size] = 0;
+
+    //closing file
+    file.close();
+
+    //interpret json
+    StaticJsonBuffer<1024> jsonBuffer;
+    JsonArray& alerts = jsonBuffer.parseArray(buffer);
+
+    //no alerts
+    if (alerts.size() == 0) {
+      return;
+    }
+
+    //recipients of the email alert
+    if (alerts.success()) {
+      //setting the recipients
+      for (auto alert : alerts) {
+        mail.to((const char *) alert["email"], (const char *) alert["name"]);
+      }
+
+    } else {
+      DEBUG_PRINTLN("File ALERTS.TXT error!");
+      return;
+    }
+
+    //Subject and message
+    //earthquake is occuring and the notifications has not been sent before
+    if (earthquake.events.occuring && !notifications.email.occuring) {
+      //email subject
+      mail.subject("Fishmograph: Earthquake started");
+      //body of the mail
+      char body[100];
+      //create the date
+      DateTime date(earthquake.start_timestamp, DateTime::EPOCH_UNIX);
+      sprintf(body, "An earthquake started at %02d/%02d/%04d %02d:%02d:%02d!", date.month(), date.day(), date.year(), date.hour(), date.minute(), date.second());
+      mail.body(body);
+      
+      //setting that the notification has been sent
+      notifications.email.occuring = true;
+    
+    //earthquake is occuring and the shutoff notifications has not been sent before
+    } else if (earthquake.events.occuring && earthquake.events.shutoff && !notifications.email.shutoff) {
+      //email subject
+      mail.subject("Fishmograph: Shutoff signal emitted");
+      //body of the mail
+      char body[100];
+      //create the date
+      DateTime date(earthquake.shutoff_timestamp, DateTime::EPOCH_UNIX);
+      sprintf(body, "Shutoff signal emitted at %02d/%02d/%04d %02d:%02d:%02d!", date.month(), date.day(), date.year(), date.hour(), date.minute(), date.second());
+      mail.body(body);
+      //setting that the notification has been sent
+      notifications.email.shutoff = true;
+
+    //earthquake is occuring and the collapse notifications has not been sent before
+    } else if (earthquake.events.occuring && earthquake.events.collapse && !notifications.email.collapse) {
+      //email subject
+      mail.subject("Fishmograph: Collapse signal emitted");
+      //body of the mail
+      char body[100];
+      //create the date
+      DateTime date(earthquake.collapse_timestamp, DateTime::EPOCH_UNIX);
+      sprintf(body, "Collapse signal emitted at %02d/%02d/%04d %02d:%02d:%02d!", date.month(), date.day(), date.year(), date.hour(), date.minute(), date.second());
+      mail.body(body);
+      //setting that the notification has been sent
+      notifications.email.collapse = true;
+    
+    //earthquake is endend and the notifications has not been sent before and there is still time to sent it
+    } else if (earthquake.events.end && !notifications.web.end) {
+      //email subject
+      mail.subject("Fishmograph: Earthquake ended");
+      //body of the mail
+      char body[100];
+      sprintf(body, "The earthquake ended! si: %.2f [m/s], pga: %.2f [m/s^2], temperature: %.2f [C]", earthquake.si, earthquake.pga, earthquake.temperature);
+      mail.body(body);
+      //setting that the notification has been sent
+      notifications.email.end = true;
+    
+    }
+
+    // Send the email through the SMTP client
+    if (smtp.send(mail) != SMTP_OK) {
+      DEBUG_PRINTLN("SMTP server problem!")
+    }
+
+  }
+  
 }
 
 
@@ -1145,6 +1309,12 @@ void initD7S() {
   notifications.web.shutoff = false;
   notifications.web.collapse = false;
 
+  //reset email notification
+  notifications.email.occuring = false;
+  notifications.email.end = false;
+  notifications.email.shutoff = false;
+  notifications.email.collapse = false;
+
   //setting that the earthquake is saved to prevent false entry
   earthquake.saved = true;
 
@@ -1174,7 +1344,7 @@ void saveEarthquakeData() {
     }
     //if the collapse event is occured
     if (earthquake.events.collapse) {
-      detection["collapse"] = earthquake.collapse_time;
+      detection["collapse"] = earthquake.collapse_timestamp;
     } else {
       detection["collapse"] = 0;
     }
@@ -1240,7 +1410,6 @@ void setup() {
 
   //all ready to go
   DEBUG_PRINTLN(F("Ready!\n"));
-
 }
 
 void loop() {
@@ -1249,4 +1418,9 @@ void loop() {
 
   //save the earthquake data if new
   saveEarthquakeData();
+
+  #ifdef ENABLE_EMAIL_NOTIFICATION
+    //send email notifications
+    sendEmailNotifications();
+  #endif
 }
