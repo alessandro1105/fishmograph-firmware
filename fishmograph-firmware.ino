@@ -6,46 +6,79 @@
 #include <SMTPClient.h>
 #include <FishGram.h>
 
+//---------------- CONFIGURATION ----------------
+
+//--- D7S ---
+//D7S interrupt pin
+#define INT1_PIN 3 //pin to which INT1 is attached
+#define INT2_PIN 5 //pin to which INT2 is attached
+
+//--- Network ---
+//AP authentication
+#define MY_SSID "ssid" //SSID
+#define MY_PASS "password" //password
+//IP Addresses
+#define IPADDR  192, 168,   0, 200 //IP of the server
+#define GATEWAY 192, 168,   0, 1 //Gateway of the network
+#define NETMASK 255, 255, 255, 0 //Netmask of the network
+
+//--- Webapp ---
+//Webapp default password
+#define WEBAPP_DEFAULT_PASSWORD "fish123";
+
+//--- Email notifications ---
+//Uncomment the line below to enable email notifications
+//#define ENABLE_EMAIL_NOTIFICATION
+//SMTP server information
+//Remember: if you use a server that require TLS you need a client capable secure connections
+#define SMTP_SERVER "smtp.gmail.com" //SMTP server
+#define SMTP_PORT 465 //SMTP server port
+//SMTP autherntication
+#define SMTP_LOGIN "your email encoded in base64" //username encoded in base64
+#define SMTP_PASSWD "your password encoded in base64" //password encoded in base64
+//Email sender info
+#define SMTP_FROM_NAME "Fishmograph" //Sender name
+#define SMTP_FROM_EMAIL "sender@example.ext" //Sender email
+
+//--- Telegram notifications ---
+//Uncomment the line below to enable telegram notifications
+//#define ENABLE_TELEGRAM_NOTIFICATION
+//telegram bot token
+#define MY_TELEGRAM_TOKEN "your telegram bot token"
+
+//--- General ---
+//Time for which the notification is valid. Expired this time the notification will be not sent
+#define NOTIFICATION_VALIDITY_TIME 120000 //time in ms (2 minutes)
+
+
 //---------------- DEBUG ----------------
+
 //comment this to disable all debug information
 #define DEBUG
 
 #ifdef DEBUG
-  #define DEBUG_PRINT(x) Serial.print(x);
-  #define DEBUG_PRINTLN(x) Serial.println(x);
+  #define DEBUG_INIT(x) Serial.begin(x); while(!Serial);
+  #define DEBUG_PRINT(x) Serial.print(x)
+  #define DEBUG_PRINTLN(x) Serial.println(x)
 #else
+  #define DEBUG_INIT(x)
   #define DEBUG_PRINT(x)
   #define DEBUG_PRINTLN(x)
 #endif
 
-//---------------- CONSTANTS ----------------
-//WEBAPP PASSWORD
-#define WEBAPP_DEFAULT_PASSWORD "fish123";
 
-//NETWORKS
-//put here your network settings
-#define MY_SSID "" //ssid
-#define MY_PASS "" //password
+//---------------- DEBUG ----------------
 
-//IP ADDRESS CONSTANTS
-#define IPADDR  192, 168,   0, 200 //ip of the server
-#define GATEWAY 192, 168,   0, 1 //gateway of the network
-#define NETMASK 255, 255, 255, 0 //netmask of the network
-
-//SD CARD
+//--- SD Ccrd ---
+//SDCS pin
 #ifdef SDCS
   #define SD_CS SDCS
 #else
   #define SD_CS 4
 #endif
 
-//D7S INTERRUPT PINS
-#define INT1_PIN 3 //interrupt pin INT1 of D7S attached to pin 2 of Arduino
-#define INT2_PIN 5 //interrupt pin INT2 of D7S attached to pin 3 of Arduino
-
-//TIME FOR WHICH THE NOTIFICATION IS VALID
-#define NOTIFICATION_VALIDITY_TIME 120000 //time in ms (2 minutes)
-
+//--- D7S status ---
+//Status of the D7S sensor (used primarly in the webapp)
 typedef enum status {
   STATUS_ERROR = -1,
   STATUS_OK = 1,
@@ -56,99 +89,174 @@ typedef enum status {
 };
 
 
-//--- EMAIL SETTINGS ---
-//uncomment this to enable email notification. You must fill the fields below with your data.
-//#define ENABLE_EMAIL_NOTIFICATION
-
-//SMTP server settings
-//GMAIL
-// You will need a secure client to use Gmail on port 465 because it requires TLS.
-// You also need to enable "less secure apps" from https://myaccount.google.com/lesssecureapps
-#define SMTP_SERVER "smtp.gmail.com"
-#define SMTP_PORT 465
-//SMTP2GO
-// You just need a normal client because the connection to server is not secure
-//#define SMTP_SERVER "mail.smtp2go.com"
-//#define SMTP_PORT 2525
-
-//SMTP AUTH (must be in base64)
-#define SMTP_LOGIN "your email encoded in base64"
-#define SMTP_PASSWD "your password encoded in base64"
-
-//FROM EMAIL
-#define SMTP_FROM_NAME "Fishmograph"
-#define SMTP_FROM_EMAIL "sender@example.ext"
-
-//--- TELEGRAM TOKEN ---
-//uncomment this to enable telegram notification. You must fill the fields below with your bot api token.
-#define ENABLE_TELEGRAM_NOTIFICATION
-
-//telegram bot token
-#define MY_TELEGRAM_TOKEN "your telegram bot token"
-
 //---------------- VARIABLES ----------------
-//Network
+
+//--- Network ---
 IPAddress ip(IPADDR);
 IPAddress gateway(GATEWAY);
 IPAddress netmask(NETMASK);
 
-//SD card
+//--- SD card ---
 Sd2Card card;
 SdVolume volume;
 SdFile root;
 SdFile file;
 
-//web session variables
-long sessionID = -1; //dentificator of the web session (only positive number are valid session ID)
-bool isUserLogged = false; //if true the user is logged in this session
-
-//The web server object
+//--- Webapp ---
+//Variable used to handle the web session
+long sessionID = -1; //identificator of the web session (only positive number are valid session ID)
+bool isUserLogged = false; //if true the user is logged in
+//Fishino web server object
 FishinoWebServer web(80);
 
-//earthquake handling variables
-//earthquake data current/last earthquake
+//--- Earthquake ---
+//Status of the earthquake
 struct earthquake_t {
-  // Events
+  //current events
   struct events_t {
-    bool occuring; // Earthquake started
-    bool end; //earthquake ended
+    bool occuring; //earthquake started
+    bool end; //arthquake ended
     bool shutoff; //shutoff occured
     bool collapse; //collapse occured
   } events;
-  // Earthquake information
+  //earthquake info
   long start_timestamp; //timestamp at which the eathquake started
   long end_timestamp; //timestamp at which the earthquake ended
   long shutoff_timestamp; //timestamp at which the shutoff event occured
   long collapse_timestamp; //timestamp at which the shutoff event occured
-  float si;
-  float pga;
-  float temperature;
+  float si; //SI at the end of the earthquake
+  float pga; //PGA at the end of the earthquake
+  float temperature; //Temperature at which the earthquakes is registered
+  //variable used to save the earthquake info to the SD card
   bool saved;
 } earthquake;
 
-//Notifications
+//--- Notifications ---
 struct notification_t {
-  // Web notifications
+  //notification structure
   struct status_t {
     bool occuring; // Earthquake started
     bool end; //earthquake ended
     bool shutoff; //shutoff occured
     bool collapse; //collapse occured
   };
+  //web notifications status
   struct status_t web;
-  struct status_t email;
-  struct status_t telegram;
+
+  //If email notifications is enabled
+  #ifdef ENABLE_EMAIL_NOTIFICATION
+    //email notifications status
+    struct status_t email;
+  #endif
+
+  //If telegram notifications is enabled
+  #ifdef ENABLE_TELEGRAM_NOTIFICATION
+    //telegram notifications status
+    struct status_t telegram;
+  #endif
+
 } notifications;
 
-// Use FishinoSecureClient class to create TLS connection
-FishinoSecureClient client;
+//--- Email notifications ---
+//If email notifications is enabled
+#ifdef ENABLE_EMAIL_NOTIFICATION
+  //Fishino secure client to connet to the SMTP server
+  FishinoSecureClient client;
+#endif
 
-// Use FishinoClient class to create connection
-//FishinoClient client;
 
+//---------------- D7S CODE SECTION ----------------
+//Reset notification status
+void resetNotifications() {
 
-//---------------- D7S EVENTS HANDLERS ----------------
-//handler for the START_EARTHQUAKE D7S event
+  //reset web notification
+  notifications.web.occuring = false;
+  notifications.web.end = false;
+  notifications.web.shutoff = false;
+  notifications.web.collapse = false;
+
+  #ifdef ENABLE_EMAIL_NOTIFICATION
+    //reset email notification
+    notifications.email.occuring = false;
+    notifications.email.end = false;
+    notifications.email.shutoff = false;
+    notifications.email.collapse = false;
+  #endif
+
+  #ifdef ENABLE_TELEGRAM_NOTIFICATION
+    //reset telegram notification
+    notifications.telegram.occuring = false;
+    notifications.telegram.end = false;
+    notifications.telegram.shutoff = false;
+    notifications.telegram.collapse = false;
+  #endif
+
+}
+
+//---------------- D7S CODE SECTION ----------------
+
+//Init the D7S sensor
+void initD7S() {
+  DEBUG_PRINTLN("--- Init D7S ----");
+  
+  DEBUG_PRINT(F("Starting D7S..."));
+  //start D7S connection
+  D7S.begin();
+  //wait until the D7S is ready
+  while (!D7S.isReady()) {
+    DEBUG_PRINT(F("."));
+    delay(500);
+  }
+  DEBUG_PRINTLN(F("OK"));
+
+  //setting the D7S to switch the axis at inizialization time
+  D7S.setAxis(SWITCH_AT_INSTALLATION);
+
+  //setting D7S library interrupt handling
+  D7S.enableInterruptINT1(INT1_PIN);
+  D7S.enableInterruptINT2(INT2_PIN);
+
+  //registering event handler
+  D7S.registerInterruptEventHandler(START_EARTHQUAKE, &startEarthquakeHandler); //START_EARTHQUAKE event handler
+  D7S.registerInterruptEventHandler(END_EARTHQUAKE, &endEarthquakeHandler); //END_EARTHQUAKE event handler
+  D7S.registerInterruptEventHandler(SHUTOFF_EVENT, &shutoffHandler); //SHUTOFF_EVENT event handler
+  D7S.registerInterruptEventHandler(COLLAPSE_EVENT, &collapseHandler); //COLLAPSE_EVENT event handler
+
+  DEBUG_PRINTLN(F("Initializing the D7S sensor in 2 seconds. Keep it steady!"));
+  delay(2000);
+
+  //initialize the sensor
+  DEBUG_PRINT(F("Initializing D7S."));
+  //start the initial installation procedure
+  D7S.initialize();
+  //wait until the D7S is ready (the initializing process is ended)
+  while (!D7S.isReady()) {
+    DEBUG_PRINT(F("."));
+    delay(500);
+  }
+  DEBUG_PRINTLN(F("OK"));
+
+  //--- RESETTING EVENTS ---
+  //reset the events shutoff/collapse memorized into the D7S
+  D7S.resetEvents();
+
+  //reset earthquake events
+  earthquake.events.occuring = false;
+  earthquake.events.end = false;
+  earthquake.events.shutoff = false;
+  earthquake.events.collapse = false;
+
+  //reset notifications status
+  resetNotifications();
+
+  //setting that the earthquake is saved to prevent false entry
+  earthquake.saved = true;
+
+  //start D7S library interrupt handling
+  D7S.startInterruptHandling();
+}
+
+//Handler function for the earthquake begin event
 void startEarthquakeHandler() {  
   // A new earthquake is detected
   // We need to clear notifications and events status and register the timestamp
@@ -165,32 +273,17 @@ void startEarthquakeHandler() {
   earthquake.events.shutoff = false;
   earthquake.events.collapse = false;
 
-  //reset web notification
-  notifications.web.occuring = false;
-  notifications.web.end = false;
-  notifications.web.shutoff = false;
-  notifications.web.collapse = false;
-
-  //reset email notification
-  notifications.email.occuring = false;
-  notifications.email.end = false;
-  notifications.email.shutoff = false;
-  notifications.email.collapse = false;
-
-  //reset telegram notification
-  notifications.telegram.occuring = false;
-  notifications.telegram.end = false;
-  notifications.telegram.shutoff = false;
-  notifications.telegram.collapse = false;
+  //reset notifications status
+  resetNotifications();
 
   //setting that the current earthquakes is not saved in the sd card
   earthquake.saved = false;
 
   //debug information
-  DEBUG_PRINTLN(F("--- EARTHQUAKE STARTED ---"));
+  DEBUG_PRINTLN(F("Earthquake started!"));
 }
 
-//handler for the END_EARTHQUAKE D7S event
+//Handler function for the earthquake end event
 void endEarthquakeHandler(float si, float pga, float temperature) {
   // The earthquake is ended
   // We need to save the data to the data file and save the timestamp
@@ -208,20 +301,20 @@ void endEarthquakeHandler(float si, float pga, float temperature) {
   earthquake.temperature = temperature;
 
   //debug information
-  DEBUG_PRINTLN(F("--- EARTHQUAKE ENDED ---"));
+  DEBUG_PRINTLN(F("Earthquake ended!"));
 }
 
-//handler for the SHUTOFF D7S event
+//Handler function for the shutoff condition
 void shutoffHandler() {
   // Saving the shutoff event
   earthquake.shutoff_timestamp = RTC.now().getUnixTime();
   earthquake.events.shutoff = true;
 
   //debug information
-  DEBUG_PRINTLN(F("--- SHUTOFF ---"));
+  DEBUG_PRINTLN(F("Shutoff!"));
 } 
 
-//handler for the COLLAPSE D7S event
+//Handler function for the collapse condition
 void collapseHandler() {
   // Saving the shutoff event
   earthquake.collapse_timestamp = RTC.now().getUnixTime();
@@ -231,8 +324,234 @@ void collapseHandler() {
   DEBUG_PRINTLN(F("--- COLLAPSE ---"));
 }
 
-//---------------- SESSION AND USER HANDLERS ----------------
-//start a web session
+
+//---------------- FISHINO CODE SECTION ----------------
+
+//Init Fishino board
+void initFishino() {
+  DEBUG_PRINTLN("--- Init Fishino ----");
+
+  //resetting fishino
+  DEBUG_PRINT(F("Resetting Fishino..."));
+  while(!Fishino.reset())
+  {
+    DEBUG_PRINT(F("."));
+    delay(500);
+  }
+  DEBUG_PRINTLN(F("OK"));
+  //Connetiing Fishino to the WiFi
+  Fishino.setMode(STATION_MODE);
+  DEBUG_PRINT(F("Connecting AP..."));
+  while(!Fishino.begin(F(MY_SSID), F(MY_PASS)))
+  {
+    DEBUG_PRINT(F("."));
+    delay(500);
+  }
+  DEBUG_PRINTLN(F("OK"));
+  //setting up the ip configuration
+  Fishino.config(ip, gateway, netmask);
+  // wait for connection completion
+  DEBUG_PRINT(("Waiting IP..."));
+  while(Fishino.status() != STATION_GOT_IP)
+  {
+    DEBUG_PRINT(F("."));
+    delay(500);
+  }
+  DEBUG_PRINTLN(F("OK"));
+  // print current IP address
+  DEBUG_PRINT(F("IP address: "));
+  DEBUG_PRINTLN(Fishino.localIP());
+}
+
+
+//---------------- RTC CODE SECTION ----------------
+
+//Init on board RTC
+void initRTC() {
+  DEBUG_PRINTLN("--- Init RTC ----");
+  DEBUG_PRINT("Initializing...");
+
+  if (!RTC.isrunning()) {
+    RTC.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  }
+
+  DEBUG_PRINTLN("OK");
+}
+
+
+//---------------- SD CARD CODE SECTION ----------------
+
+//Init SD card
+void initSD() {
+  DEBUG_PRINTLN("--- Init SD Card ----");
+
+  // initialize the SD card.
+  DEBUG_PRINT(F("Preparing SD..."));
+  // Pass over the speed and Chip select for the SD card
+  if (!card.init(SPI_FULL_SPEED, SD_CS)) {
+    DEBUG_PRINTLN(F("FAILED"));
+    return;
+  // initialize a FAT volume.
+  } else if (!volume.init(&card)) {
+    DEBUG_PRINTLN(F("VOLUME FAILED"));
+    return;
+  
+  } else if (!root.openRoot(&volume)) {
+    DEBUG_PRINTLN(F("ROOT FAILED"));
+    return;
+  }
+
+  DEBUG_PRINTLN("OK");
+}
+
+
+//---------------- WEBAPP USER CODE SECTION ----------------
+
+//Get the user password from a file
+char *getUserPassword() {
+
+  //if the password file doesn't exists use the default password
+  if (!file.open(&root, "PASSWORD.TXT", O_READ | O_WRITE)) {
+    return WEBAPP_DEFAULT_PASSWORD;
+  }
+
+  char password[21]; //max password is 20 char
+
+  //read the password from the file
+  int size = file.read(password, 20);
+  password[size] = 0;
+
+  file.close();
+
+  //return the password
+  return password;
+}
+
+
+//---------------- FISHINO WEBSERER CODE SECTION ----------------
+
+//Init web server
+void initWebServer() {
+  DEBUG_PRINTLN("--- Init Web server ----");
+  DEBUG_PRINT("Initializing...");
+  //register the handler for the web server
+  //login and logout handlers
+  web.addHandler(F("/login"), FishinoWebServer::POST, &loginHandler); //login
+  web.addHandler(F("/logout"), FishinoWebServer::POST, &logoutHandler); //logout
+  web.addHandler(F("/password/update"), FishinoWebServer::POST, &passwordUpdateHandler); //change password
+  //index handler
+  web.addHandler(F("/"), FishinoWebServer::GET, &indexHandler);
+  //status handler
+  web.addHandler(F("/status"), FishinoWebServer::GET, &statusHandler);
+  //settings handlers
+  web.addHandler(F("/settings/initialize"), FishinoWebServer::POST, &settingsInitializeHandler); //must be POST
+  web.addHandler(F("/settings/selftest"), FishinoWebServer::POST, &settingsSelftestHandler); //must be POST
+  web.addHandler(F("/settings/clear/d7s"), FishinoWebServer::POST, &settingsClearD7SHandler); //must be POST
+  web.addHandler(F("/settings/clear/data"), FishinoWebServer::POST, &settingsClearDataHandler); //must be POST
+  //getting data
+  web.addHandler(F("/data"), FishinoWebServer::GET, &dataHandler);
+  web.addHandler(F("/data/d7s"), FishinoWebServer::GET, &dataD7SHandler);
+  //alerts handling
+  web.addHandler(F("/recipient/list"), FishinoWebServer::GET, &recipientListHandler);
+  web.addHandler(F("/recipient/new"), FishinoWebServer::POST, &recipientNewHandler);
+  web.addHandler(F("/recipient/delete"), FishinoWebServer::POST, &recipientDeleteHandler);
+  //file handler
+  web.addHandler(F("/" "*"), FishinoWebServer::GET, &fileHandler);
+
+  //Request header "Cookie" to handle the session
+  web.addHeader(F("Cookie"));
+
+  DEBUG_PRINTLN("OK");
+}
+
+
+//--- AUxiliary functions ---
+
+//auxiliary function to send HTTP headers
+void sendHTTPHeader(FishinoWebServer& web, const __FlashStringHelper *header, const __FlashStringHelper *value) {
+  FishinoClient client = web.getClient();
+  client.print(header);
+  client.print(": ");
+  client.println(value);
+}
+
+//auxiliary function to send HTTP headers
+void sendHTTPHeader(FishinoWebServer& web, const __FlashStringHelper *header, const char *value) {
+  FishinoClient client = web.getClient();
+  client.print(header);
+  client.print(": ");
+  client.println(value);
+}
+
+//Send HTTP status code
+//FishinoWebServer close the header section of the response if the status code is different from 200
+void sendHTTPStatusCode(FishinoWebServer& web, uint16_t statusCode) {
+  FishinoClient client = web.getClient();
+  client << F("HTTP/1.1 ") << statusCode << F(" OK\r\n");
+}
+
+// sends a file to client
+void sendFile(FishinoWebServer& web, const char* filename, const __FlashStringHelper *contentType, bool allowProtectedFile) {
+  //getting the client
+  FishinoClient& client = web.getClient();
+  
+  // if the filename is not valid
+  if (!filename) {
+    sendHTTPStatusCode(web, 404);
+    sendSessionCookie(web);
+    web.endHeaders();
+    client.println(F("Could not parse URL"));
+    client.println();
+    DEBUG_PRINTLN("Could not parse URL");
+    return;
+  }
+
+  //if the file doesn't exists or it's protected
+  if ((!allowProtectedFile && (strcmp(filename, "DATA.TXT") == 0 || strcmp(filename, "EMAILS.TXT") == 0 || strcmp(filename, "PASSWORD.TXT") == 0)) || !file.open(&root, filename, O_READ)) {
+    sendHTTPStatusCode(web, 404);
+    sendSessionCookie(web);
+    web.endHeaders();
+    client.print(F("Could not find file: "));
+    client.println(filename);
+    client.println();
+    DEBUG_PRINT(F("Could not find file: "));
+    DEBUG_PRINTLN(filename);
+    return;
+  }
+
+  //the file exists and can be sent
+  sendHTTPStatusCode(web, 200);
+  sendSessionCookie(web);
+
+  //svg type
+  if (contentType != NULL) {
+    sendHTTPHeader(web, F("Content-Type"), contentType);
+
+  } else if (strstr(filename, ".SVG") != NULL) {
+    sendHTTPHeader(web, F("Content-Type"), F("image/svg+xml"));
+    sendHTTPHeader(web, F("Cache-Control"), F("public, max-age=900"));
+
+  //other types
+  } else {
+    FishinoWebServer::MimeType mimeType = web.getMimeTypeFromFilename(filename);
+    web.sendContentType(mimeType);
+
+    if (mimeType == FishinoWebServer::MIMETYPE_GIF ||
+        mimeType == FishinoWebServer::MIMETYPE_JPG ||
+        mimeType == FishinoWebServer::MIMETYPE_PNG ||
+        mimeType == FishinoWebServer::MIMETYPE_ICO) {
+      sendHTTPHeader(web, F("Cache-Control"), F("public, max-age=900"));
+    }
+  }
+
+  web.endHeaders();
+  //send the file
+  web.sendFile(file);
+  //close the file
+  file.close();
+}
+
+//Start a web session
 void startSession(FishinoWebServer &web) {
   long cookieSessionValue = -1;
   //read the session cookie
@@ -255,7 +574,7 @@ void startSession(FishinoWebServer &web) {
   }
 }
 
-// send the web session cookie
+//Send the web session cookie
 void sendSessionCookie(FishinoWebServer &web) {
   //we need to send the "set-cookie" header with the cookie containing the session ID
   char cookie[30];
@@ -263,34 +582,16 @@ void sendSessionCookie(FishinoWebServer &web) {
   sendHTTPHeader(web, F("Set-Cookie"), cookie);
 }
 
-//get the user password from a file
-char *getUserPassword() {
 
-  //if the password file doesn't exists use the default password
-  if (!file.open(&root, "PASSWORD.TXT", O_READ | O_WRITE)) {
-    return WEBAPP_DEFAULT_PASSWORD;
-  }
+//--- Restful handlers ---
 
-  char password[21]; //max password is 20 char
-
-  //read the password from the file
-  int size = file.read(password, 20);
-  password[size] = 0;
-
-  file.close();
-
-  //return the password
-  return password;
-}
-
-//---------------- WEB SERVER HANDLERS ----------------
-//handler for the url GET "/"
+// "/"
 bool indexHandler(FishinoWebServer &web) {
   sendFile(web, "index.htm", NULL, false);
   return true;
 }
 
-//handler for the url POST "/login"
+// "/login"
 bool loginHandler(FishinoWebServer &web) {
   //start the session handling
   startSession(web);
@@ -344,7 +645,7 @@ bool loginHandler(FishinoWebServer &web) {
   return true;
 }
 
-//handler for the url POST "/logout"
+// "/logout"
 bool logoutHandler(FishinoWebServer &web) {
   //start the session handling
   startSession(web);
@@ -358,7 +659,7 @@ bool logoutHandler(FishinoWebServer &web) {
   return true;
 }
 
-//change the password
+// "/password/update"
 bool passwordUpdateHandler(FishinoWebServer &web) {
   //start the session handling
   startSession(web);
@@ -411,7 +712,7 @@ bool passwordUpdateHandler(FishinoWebServer &web) {
   return true;
 }
 
-//handler for the url GET "/status"
+// "/status"
 bool statusHandler(FishinoWebServer &web) {
   //start the session handling
   startSession(web);
@@ -477,7 +778,7 @@ bool statusHandler(FishinoWebServer &web) {
   return true;
 }
 
-//handler for the url POST "/settings/initialize"
+// "/settings/initialize"
 bool settingsInitializeHandler(FishinoWebServer &web) {
   //start the session handling
   startSession(web);
@@ -533,7 +834,7 @@ bool settingsInitializeHandler(FishinoWebServer &web) {
   return true;
 }
 
-//handler for the url POST "/settings/selftest"
+// "/settings/selftest"
 bool settingsSelftestHandler(FishinoWebServer &web) {
   //start the session handling
   startSession(web);
@@ -595,7 +896,7 @@ bool settingsSelftestHandler(FishinoWebServer &web) {
   return true;
 }
 
-//handler for the url POST "/settings/clear/d7s"
+// "/settings/clear/d7s"
 bool settingsClearD7SHandler(FishinoWebServer &web) {
   //start the session handling
   startSession(web);
@@ -636,7 +937,7 @@ bool settingsClearD7SHandler(FishinoWebServer &web) {
   return true;
 }
 
-//handler for the url POST "/settings/clear/data"
+// "/settings/clear/data"
 bool settingsClearDataHandler(FishinoWebServer &web) {
   //start the session handling
   startSession(web);
@@ -678,7 +979,7 @@ bool settingsClearDataHandler(FishinoWebServer &web) {
   return true;
 }
 
-//handler for the url GET "/data/earthquakes"
+// "/data"
 bool dataHandler(FishinoWebServer &web) {
   //start the session handling
   startSession(web);
@@ -705,7 +1006,7 @@ bool dataHandler(FishinoWebServer &web) {
   return true;
 }
 
-//handler for the url GET "/data/d7s"
+// "/data/d7s"
 bool dataD7SHandler(FishinoWebServer &web) {
   //start the session handling
   startSession(web);
@@ -762,7 +1063,7 @@ bool dataD7SHandler(FishinoWebServer &web) {
   return true;
 }
 
-// handler for getting the alerts list
+// "/recipient/list"
 bool recipientListHandler(FishinoWebServer &web) {
   //start the session handling
   startSession(web);
@@ -789,7 +1090,7 @@ bool recipientListHandler(FishinoWebServer &web) {
   return true;
 }
 
-// handler for deleting an alert
+// "/recipient/delete"
 bool recipientDeleteHandler(FishinoWebServer &web) {
   //start the session handling
   startSession(web);
@@ -869,6 +1170,7 @@ bool recipientDeleteHandler(FishinoWebServer &web) {
   return true;
 }
 
+// "/recipient/new"
 bool recipientNewHandler(FishinoWebServer &web) {
   //start the session handling
   startSession(web);
@@ -953,7 +1255,7 @@ bool recipientNewHandler(FishinoWebServer &web) {
   return true;
 }
 
-//handler for the url GET "/" "*"
+//File handler
 bool fileHandler(FishinoWebServer &web) {
   //filename of the file that we need to serve
   const char *filename = web.getFileFromPath(web.getPath()).c_str();
@@ -963,570 +1265,338 @@ bool fileHandler(FishinoWebServer &web) {
   return true;
 }
 
-//---------------- WEBSERVER UTILS FUNCTIONS ----------------
-// sends a file to client
-void sendFile(FishinoWebServer& web, const char* filename, const __FlashStringHelper *contentType, bool allowProtectedFile) {
-  //getting the client
-  FishinoClient& client = web.getClient();
-  
-  // if the filename is not valid
-  if (!filename) {
-    sendHTTPStatusCode(web, 404);
-    sendSessionCookie(web);
-    web.endHeaders();
-    client.println(F("Could not parse URL"));
-    client.println();
-    DEBUG_PRINTLN("Could not parse URL");
-    return;
-  }
 
-  //if the file doesn't exists or it's protected
-  if ((!allowProtectedFile && (strcmp(filename, "DATA.TXT") == 0 || strcmp(filename, "EMAILS.TXT") == 0 || strcmp(filename, "PASSWORD.TXT") == 0)) || !file.open(&root, filename, O_READ)) {
-    sendHTTPStatusCode(web, 404);
-    sendSessionCookie(web);
-    web.endHeaders();
-    client.print(F("Could not find file: "));
-    client.println(filename);
-    client.println();
-    DEBUG_PRINT(F("Could not find file: "));
-    DEBUG_PRINTLN(filename);
-    return;
-  }
+//---------------- EMAIL NOTIFICATIONS CODE SECTION ----------------
 
-  //the file exists and can be sent
-  sendHTTPStatusCode(web, 200);
-  sendSessionCookie(web);
+//Add this code only if notification by email is enabled
+#ifdef ENABLE_EMAIL_NOTIFICATION
 
-  //svg type
-  if (contentType != NULL) {
-    sendHTTPHeader(web, F("Content-Type"), contentType);
+  //Send email notifications
+  void sendEmailNotifications() {
 
-  } else if (strstr(filename, ".SVG") != NULL) {
-    sendHTTPHeader(web, F("Content-Type"), F("image/svg+xml"));
-    sendHTTPHeader(web, F("Cache-Control"), F("public, max-age=900"));
+    long now = RTC.now().getUnixTime();
 
-  //other types
-  } else {
-    FishinoWebServer::MimeType mimeType = web.getMimeTypeFromFilename(filename);
-    web.sendContentType(mimeType);
+    //check if there are notification to be sent
+    if ((earthquake.events.occuring && !notifications.email.occuring) && (now - earthquake.start_timestamp) <= NOTIFICATION_VALIDITY_TIME ||
+        (earthquake.events.occuring && earthquake.events.shutoff && !notifications.email.shutoff) && (now - earthquake.shutoff_timestamp) <= NOTIFICATION_VALIDITY_TIME ||
+        (earthquake.events.occuring && earthquake.events.collapse && !notifications.email.collapse) && (now - earthquake.collapse_timestamp) <= NOTIFICATION_VALIDITY_TIME ||
+        (earthquake.events.end && !notifications.email.end) && (now - earthquake.end_timestamp) <= NOTIFICATION_VALIDITY_TIME) {
 
-    if (mimeType == FishinoWebServer::MIMETYPE_GIF ||
-        mimeType == FishinoWebServer::MIMETYPE_JPG ||
-        mimeType == FishinoWebServer::MIMETYPE_PNG ||
-        mimeType == FishinoWebServer::MIMETYPE_ICO) {
-      sendHTTPHeader(web, F("Cache-Control"), F("public, max-age=900"));
-    }
-  }
+      SMTPClient smtp(client, SMTP_SERVER, SMTP_PORT);
+      // Setting the AUTH LOGIN information
+      smtp.setAuthLogin(SMTP_LOGIN, SMTP_PASSWD);
 
-  web.endHeaders();
-  //send the file
-  web.sendFile(file);
-  //close the file
-  file.close();
-}
+      // Creating an email container
+      Mail mail;
 
-//auxiliary function to send HTTP headers
-void sendHTTPHeader(FishinoWebServer& web, const __FlashStringHelper *header, const __FlashStringHelper *value) {
-  FishinoClient client = web.getClient();
-  client.print(header);
-  client.print(": ");
-  client.println(value);
-}
-
-//auxiliary function to send HTTP headers
-void sendHTTPHeader(FishinoWebServer& web, const __FlashStringHelper *header, const char *value) {
-  FishinoClient client = web.getClient();
-  client.print(header);
-  client.print(": ");
-  client.println(value);
-}
-
-//send HTTP status code
-//FishinoWebServer close the header section of the response if the status code is != 200
-void sendHTTPStatusCode(FishinoWebServer& web, uint16_t statusCode) {
-  FishinoClient client = web.getClient();
-  client << F("HTTP/1.1 ") << statusCode << F(" OK\r\n");
-}
-
-//---------------- EMAIL FUNCTIONS ----------------
-void sendEmailNotifications() {
-
-  long now = RTC.now().getUnixTime();
-
-  //check if there are notification to be sent
-  if ((earthquake.events.occuring && !notifications.email.occuring) && (now - earthquake.start_timestamp) <= NOTIFICATION_VALIDITY_TIME ||
-      (earthquake.events.occuring && earthquake.events.shutoff && !notifications.email.shutoff) && (now - earthquake.shutoff_timestamp) <= NOTIFICATION_VALIDITY_TIME ||
-      (earthquake.events.occuring && earthquake.events.collapse && !notifications.email.collapse) && (now - earthquake.collapse_timestamp) <= NOTIFICATION_VALIDITY_TIME ||
-      (earthquake.events.end && !notifications.email.end) && (now - earthquake.end_timestamp) <= NOTIFICATION_VALIDITY_TIME) {
-
-    SMTPClient smtp(client, SMTP_SERVER, SMTP_PORT);
-    // Setting the AUTH LOGIN information
-    smtp.setAuthLogin(SMTP_LOGIN, SMTP_PASSWD);
-
-    // Creating an email container
-    Mail mail;
-
-    // Compiling the email
-    mail.from(SMTP_FROM_EMAIL, SMTP_FROM_NAME);
+      // Compiling the email
+      mail.from(SMTP_FROM_EMAIL, SMTP_FROM_NAME);
 
 
-    //if the file doesn't exists
-    if (!file.open(&root, "EMAILS.TXT", O_READ)) {
-      file.open(&root, "EMAILS.TXT", O_CREAT | O_WRITE | O_TRUNC);
-      file.print(F("[]"));
+      //if the file doesn't exists
+      if (!file.open(&root, "EMAILS.TXT", O_READ)) {
+        file.open(&root, "EMAILS.TXT", O_CREAT | O_WRITE | O_TRUNC);
+        file.print(F("[]"));
+        file.close();
+        return; //no alerts
+      }
+
+      //read the entire file of the alerts
+      char buffer[1024];
+
+      //read the file
+      int size = file.read(buffer, 1023);
+      buffer[size] = 0;
+
+      //closing file
       file.close();
-      return; //no alerts
-    }
 
-    //read the entire file of the alerts
-    char buffer[1024];
+      //interpret json
+      StaticJsonBuffer<1024> jsonBuffer;
+      JsonArray& recipients = jsonBuffer.parseArray(buffer);
 
-    //read the file
-    int size = file.read(buffer, 1023);
-    buffer[size] = 0;
+      //file not valid
+      if (!recipients.success()) {
+        DEBUG_PRINTLN("File EMAILS.TXT error!");
+        return;
+      }
 
-    //closing file
-    file.close();
+      //no recipients
+      if (recipients.size() == 0) {
+        return;
+      }
 
-    //interpret json
-    StaticJsonBuffer<1024> jsonBuffer;
-    JsonArray& recipients = jsonBuffer.parseArray(buffer);
+      //recipients of the email alert
+      //setting the recipients
+      for (auto recipient : recipients) {
+        mail.to((const char *) recipient["email"], (const char *) recipient["name"]);
+      }
 
-    //file not valid
-    if (!recipients.success()) {
-      DEBUG_PRINTLN("File EMAILS.TXT error!");
-      return;
-    }
-
-    //no recipients
-    if (recipients.size() == 0) {
-      return;
-    }
-
-    //recipients of the email alert
-    //setting the recipients
-    for (auto recipient : recipients) {
-      mail.to((const char *) recipient["email"], (const char *) recipient["name"]);
-    }
-
-    //Subject and message
-    //earthquake is occuring and the notifications has not been sent before
-    if (earthquake.events.occuring && !notifications.email.occuring) {
-      //email subject
-      mail.subject("Fishmograph: Earthquake started");
-      //body of the mail
-      char body[100];
-      //create the date
-      DateTime date(earthquake.start_timestamp, DateTime::EPOCH_UNIX);
-      sprintf(body, "An earthquake started at %02d/%02d/%04d %02d:%02d:%02d!", date.month(), date.day(), date.year(), date.hour(), date.minute(), date.second());
-      mail.body(body);
+      //Subject and message
+      //earthquake is occuring and the notifications has not been sent before
+      if (earthquake.events.occuring && !notifications.email.occuring) {
+        //email subject
+        mail.subject("Fishmograph: Earthquake started");
+        //body of the mail
+        char body[100];
+        //create the date
+        DateTime date(earthquake.start_timestamp, DateTime::EPOCH_UNIX);
+        sprintf(body, "An earthquake started at %02d/%02d/%04d %02d:%02d:%02d!", date.month(), date.day(), date.year(), date.hour(), date.minute(), date.second());
+        mail.body(body);
+        
+        //setting that the notification has been sent
+        notifications.email.occuring = true;
       
-      //setting that the notification has been sent
-      notifications.email.occuring = true;
-    
-    //earthquake is occuring and the shutoff notifications has not been sent before
-    } else if (earthquake.events.occuring && earthquake.events.shutoff && !notifications.email.shutoff) {
-      //email subject
-      mail.subject("Fishmograph: Shutoff signal emitted");
-      //body of the mail
-      char body[100];
-      //create the date
-      DateTime date(earthquake.shutoff_timestamp, DateTime::EPOCH_UNIX);
-      sprintf(body, "Shutoff signal emitted at %02d/%02d/%04d %02d:%02d:%02d!", date.month(), date.day(), date.year(), date.hour(), date.minute(), date.second());
-      mail.body(body);
-      //setting that the notification has been sent
-      notifications.email.shutoff = true;
+      //earthquake is occuring and the shutoff notifications has not been sent before
+      } else if (earthquake.events.occuring && earthquake.events.shutoff && !notifications.email.shutoff) {
+        //email subject
+        mail.subject("Fishmograph: Shutoff signal emitted");
+        //body of the mail
+        char body[100];
+        //create the date
+        DateTime date(earthquake.shutoff_timestamp, DateTime::EPOCH_UNIX);
+        sprintf(body, "Shutoff signal emitted at %02d/%02d/%04d %02d:%02d:%02d!", date.month(), date.day(), date.year(), date.hour(), date.minute(), date.second());
+        mail.body(body);
+        //setting that the notification has been sent
+        notifications.email.shutoff = true;
 
-    //earthquake is occuring and the collapse notifications has not been sent before
-    } else if (earthquake.events.occuring && earthquake.events.collapse && !notifications.email.collapse) {
-      //email subject
-      mail.subject("Fishmograph: Collapse signal emitted");
-      //body of the mail
-      char body[100];
-      //create the date
-      DateTime date(earthquake.collapse_timestamp, DateTime::EPOCH_UNIX);
-      sprintf(body, "Collapse signal emitted at %02d/%02d/%04d %02d:%02d:%02d!", date.month(), date.day(), date.year(), date.hour(), date.minute(), date.second());
-      mail.body(body);
-      //setting that the notification has been sent
-      notifications.email.collapse = true;
-    
-    //earthquake is endend and the notifications has not been sent before and there is still time to sent it
-    } else if (earthquake.events.end && !notifications.email.end) {
-      //email subject
-      mail.subject("Fishmograph: Earthquake ended");
-      //body of the mail
-      char body[100];
-      sprintf(body, "The earthquake ended! si: %.2f [m/s], pga: %.2f [m/s^2], temperature: %.2f [C]", earthquake.si, earthquake.pga, earthquake.temperature);
-      mail.body(body);
-      //setting that the notification has been sent
-      notifications.email.end = true;
-    
+      //earthquake is occuring and the collapse notifications has not been sent before
+      } else if (earthquake.events.occuring && earthquake.events.collapse && !notifications.email.collapse) {
+        //email subject
+        mail.subject("Fishmograph: Collapse signal emitted");
+        //body of the mail
+        char body[100];
+        //create the date
+        DateTime date(earthquake.collapse_timestamp, DateTime::EPOCH_UNIX);
+        sprintf(body, "Collapse signal emitted at %02d/%02d/%04d %02d:%02d:%02d!", date.month(), date.day(), date.year(), date.hour(), date.minute(), date.second());
+        mail.body(body);
+        //setting that the notification has been sent
+        notifications.email.collapse = true;
+      
+      //earthquake is endend and the notifications has not been sent before and there is still time to sent it
+      } else if (earthquake.events.end && !notifications.email.end) {
+        //email subject
+        mail.subject("Fishmograph: Earthquake ended");
+        //body of the mail
+        char body[100];
+        sprintf(body, "The earthquake ended! si: %.2f [m/s], pga: %.2f [m/s^2], temperature: %.2f [C]", earthquake.si, earthquake.pga, earthquake.temperature);
+        mail.body(body);
+        //setting that the notification has been sent
+        notifications.email.end = true;
+      
+      }
+
+      // Send the email through the SMTP client
+      if (smtp.send(mail) != SMTP_OK) {
+        DEBUG_PRINTLN("SMTP server problem!");
+      }
+
     }
-
-    // Send the email through the SMTP client
-    if (smtp.send(mail) != SMTP_OK) {
-      DEBUG_PRINTLN("SMTP server problem!");
-    }
-
+    
   }
-  
-}
 
-//---------------- TELEGRAM FUNCTIONS ----------------
+#endif
 
-bool telegramHandler(uint32_t id, const char *firstName, const char *lastName, const char *message) {
-  String answer;
 
-  DEBUG_PRINT(firstName);
-  DEBUG_PRINT(" ");
-  DEBUG_PRINT(lastName);
-  DEBUG_PRINT(" ");
-  DEBUG_PRINTLN(message);
+//---------------- TELEGRAM NOTIFICATIONS CODE SECTION ----------------
 
-  //checking the message (command) received
-  if (strcmp(message, "/start") == 0) {
-    answer = "Hello ";
-    answer += firstName;
-    answer += ", thanks for using Fishmograph!";
-  
-  //register or unregister an user
-  } else if (strcmp(message, "/register") == 0 || strcmp(message, "/unregister") == 0) {
+//Add this code only if notification by telegram is enabled
+#ifdef ENABLE_TELEGRAM_NOTIFICATION
 
-    if (!file.open(&root, "TELEGRAM.TXT", O_READ | O_WRITE)) {
-      file.open(&root, "TELEGRAM.TXT", O_CREAT | O_WRITE | O_TRUNC);
-      file.print(F("[]"));
-      file.rewind();
-    }
+  //Init Telegram
+  void initTelegram() {
+    DEBUG_PRINTLN("--- Init Telegram ----");
+    DEBUG_PRINT("Initializing...");
+    // start FishGram
+    FishGram.messageEvent(telegramHandler);
+    FishGram.begin(F(MY_TELEGRAM_TOKEN));
 
-    //read the file max 1024 char
-    char buffer[1024];
+    DEBUG_PRINTLN("OK");
+  }
 
-    //read the file
-    int size = file.read(buffer, 1023);
-    buffer[size] = 0;
 
-    //interpret json
-    StaticJsonBuffer<1024> jsonBuffer;
-    JsonArray& users = jsonBuffer.parseArray(buffer);
+  //handler for FishGram (it handle incoming telegram messages)
+  bool telegramHandler(uint32_t id, const char *firstName, const char *lastName, const char *message) {
+    String answer;
 
-    //if the new user asked to register
-    if (strcmp(message, "/register") == 0) {
-      //max 10 users
-      if (users.size() == 10) {
-        answer = "Sorry, I reach the user limit!";
+    DEBUG_PRINT(firstName);
+    DEBUG_PRINT(" ");
+    DEBUG_PRINT(lastName);
+    DEBUG_PRINT(" ");
+    DEBUG_PRINTLN(message);
+
+    //checking the message (command) received
+    if (strcmp(message, "/start") == 0) {
+      answer = "Hello ";
+      answer += firstName;
+      answer += ", thanks for using Fishmograph!";
+    
+    //register or unregister an user
+    } else if (strcmp(message, "/register") == 0 || strcmp(message, "/unregister") == 0) {
+
+      if (!file.open(&root, "TELEGRAM.TXT", O_READ | O_WRITE)) {
+        file.open(&root, "TELEGRAM.TXT", O_CREAT | O_WRITE | O_TRUNC);
+        file.print(F("[]"));
+        file.rewind();
+      }
+
+      //read the file max 1024 char
+      char buffer[1024];
+
+      //read the file
+      int size = file.read(buffer, 1023);
+      buffer[size] = 0;
+
+      //interpret json
+      StaticJsonBuffer<1024> jsonBuffer;
+      JsonArray& users = jsonBuffer.parseArray(buffer);
+
+      //if the new user asked to register
+      if (strcmp(message, "/register") == 0) {
+        //max 10 users
+        if (users.size() == 10) {
+          answer = "Sorry, I reach the user limit!";
+        } else {
+          //search if the user is already registered
+          bool found = false;
+          for (int i = 0; i < users.size(); i++) {
+            if (((uint32_t) users[i]["id"]) == id) {
+              found = true;
+              break;
+            }
+          }
+
+          if (!found) {
+            JsonObject& user = users.createNestedObject();
+            user["id"] = (uint32_t) id;
+
+            //write the new json to the file
+            file.rewind();
+            users.printTo(file);
+          }
+
+          answer = "You have been successfully registered to receive notifications!";
+        }
+
+        //close the file
+        file.close();
+
       } else {
-        //search if the user is already registered
-        bool found = false;
+        //search and remove the user id
         for (int i = 0; i < users.size(); i++) {
           if (((uint32_t) users[i]["id"]) == id) {
-            found = true;
+            users.remove(i);
             break;
           }
         }
 
-        if (!found) {
-          JsonObject& user = users.createNestedObject();
-          user["id"] = (uint32_t) id;
+        //close the file
+        file.close();
 
-          //write the new json to the file
-          file.rewind();
-          users.printTo(file);
-        }
-
-        answer = "You have been successfully registered to receive notifications!";
+        answer = "You have been unregistered!";
       }
-
-      //close the file
-      file.close();
 
     } else {
-      //search and remove the user id
-      for (int i = 0; i < users.size(); i++) {
-        if (((uint32_t) users[i]["id"]) == id) {
-          users.remove(i);
-          break;
-        }
+      answer = "Sorry, i didn't understand!";
+    }
+    
+    FishGram.sendMessage(id, answer.c_str());
+
+    return true;
+  }
+
+  //Send telegram notifications
+  void sendTelegramNotifications() {
+    long now = RTC.now().getUnixTime();
+
+    //check if there are notification to be sent
+    if ((earthquake.events.occuring && !notifications.telegram.occuring) && (now - earthquake.start_timestamp) <= NOTIFICATION_VALIDITY_TIME ||
+        (earthquake.events.occuring && earthquake.events.shutoff && !notifications.telegram.shutoff) && (now - earthquake.shutoff_timestamp) <= NOTIFICATION_VALIDITY_TIME ||
+        (earthquake.events.occuring && earthquake.events.collapse && !notifications.telegram.collapse) && (now - earthquake.collapse_timestamp) <= NOTIFICATION_VALIDITY_TIME ||
+        (earthquake.events.end && !notifications.telegram.end) && (now - earthquake.end_timestamp) <= NOTIFICATION_VALIDITY_TIME) {
+
+      //if the file doesn't exists
+      if (!file.open(&root, "TELEGRAM.TXT", O_READ)) {
+        file.open(&root, "TELEGRAM.TXT", O_CREAT | O_WRITE | O_TRUNC);
+        file.print(F("[]"));
+        file.close();
+        return; //no telegram users
       }
 
-      //close the file
+      //read the entire file of the alerts
+      char buffer[1024];
+
+      //read the file
+      int size = file.read(buffer, 1023);
+      buffer[size] = 0;
+
+      //closing file
       file.close();
 
-      answer = "You have been unregistered!";
+      //interpret json
+      StaticJsonBuffer<1024> jsonBuffer;
+      JsonArray& users = jsonBuffer.parseArray(buffer);
+
+      //file not valid
+      if (!users.success()) {
+        DEBUG_PRINTLN("File TELEGRAM.TXT error!");
+        return;
+      }
+
+      //no recipients
+      if (users.size() == 0) {
+        return;
+      }
+
+      //notification
+      char body[100];
+
+      //Subject and message
+      //earthquake is occuring and the notifications has not been sent before
+      if (earthquake.events.occuring && !notifications.telegram.occuring) {
+        //create the date
+        DateTime date(earthquake.start_timestamp, DateTime::EPOCH_UNIX);
+        sprintf(body, "An earthquake started at %02d/%02d/%04d %02d:%02d:%02d!", date.month(), date.day(), date.year(), date.hour(), date.minute(), date.second());
+        //setting that the notification has been sent
+        notifications.telegram.occuring = true;
+      
+      //earthquake is occuring and the shutoff notifications has not been sent before
+      } else if (earthquake.events.occuring && earthquake.events.shutoff && !notifications.telegram.shutoff) {
+        //create the date
+        DateTime date(earthquake.shutoff_timestamp, DateTime::EPOCH_UNIX);
+        sprintf(body, "Shutoff signal emitted at %02d/%02d/%04d %02d:%02d:%02d!", date.month(), date.day(), date.year(), date.hour(), date.minute(), date.second());
+        //setting that the notification has been sent
+        notifications.telegram.shutoff = true;
+
+      //earthquake is occuring and the collapse notifications has not been sent before
+      } else if (earthquake.events.occuring && earthquake.events.collapse && !notifications.telegram.collapse) {
+        //create the date
+        DateTime date(earthquake.collapse_timestamp, DateTime::EPOCH_UNIX);
+        sprintf(body, "Collapse signal emitted at %02d/%02d/%04d %02d:%02d:%02d!", date.month(), date.day(), date.year(), date.hour(), date.minute(), date.second());
+        //setting that the notification has been sent
+        notifications.telegram.collapse = true;
+      
+      //earthquake is endend and the notifications has not been sent before and there is still time to sent it
+      } else if (earthquake.events.end && !notifications.telegram.end) {
+        sprintf(body, "The earthquake ended! si: %.2f [m/s], pga: %.2f [m/s^2], temperature: %.2f [C]", earthquake.si, earthquake.pga, earthquake.temperature);
+        //setting that the notification has been sent
+        notifications.telegram.end = true;
+      }
+
+      //send the notification to all the users
+      for (auto user : users) {
+        FishGram.sendMessage((uint32_t) user["id"], body);      
+      }
+
     }
-
-  } else {
-    answer = "Sorry, i didn't understand!";
-  }
-  
-  FishGram.sendMessage(id, answer.c_str());
-
-  return true;
-}
-
-void sendTelegramNotifications() {
-  long now = RTC.now().getUnixTime();
-
-  //check if there are notification to be sent
-  if ((earthquake.events.occuring && !notifications.telegram.occuring) && (now - earthquake.start_timestamp) <= NOTIFICATION_VALIDITY_TIME ||
-      (earthquake.events.occuring && earthquake.events.shutoff && !notifications.telegram.shutoff) && (now - earthquake.shutoff_timestamp) <= NOTIFICATION_VALIDITY_TIME ||
-      (earthquake.events.occuring && earthquake.events.collapse && !notifications.telegram.collapse) && (now - earthquake.collapse_timestamp) <= NOTIFICATION_VALIDITY_TIME ||
-      (earthquake.events.end && !notifications.telegram.end) && (now - earthquake.end_timestamp) <= NOTIFICATION_VALIDITY_TIME) {
-
-    //if the file doesn't exists
-    if (!file.open(&root, "TELEGRAM.TXT", O_READ)) {
-      file.open(&root, "TELEGRAM.TXT", O_CREAT | O_WRITE | O_TRUNC);
-      file.print(F("[]"));
-      file.close();
-      return; //no telegram users
-    }
-
-    //read the entire file of the alerts
-    char buffer[1024];
-
-    //read the file
-    int size = file.read(buffer, 1023);
-    buffer[size] = 0;
-
-    //closing file
-    file.close();
-
-    //interpret json
-    StaticJsonBuffer<1024> jsonBuffer;
-    JsonArray& users = jsonBuffer.parseArray(buffer);
-
-    //file not valid
-    if (!users.success()) {
-      DEBUG_PRINTLN("File TELEGRAM.TXT error!");
-      return;
-    }
-
-    //no recipients
-    if (users.size() == 0) {
-      return;
-    }
-
-    //notification
-    char body[100];
-
-    //Subject and message
-    //earthquake is occuring and the notifications has not been sent before
-    if (earthquake.events.occuring && !notifications.telegram.occuring) {
-      //create the date
-      DateTime date(earthquake.start_timestamp, DateTime::EPOCH_UNIX);
-      sprintf(body, "An earthquake started at %02d/%02d/%04d %02d:%02d:%02d!", date.month(), date.day(), date.year(), date.hour(), date.minute(), date.second());
-      //setting that the notification has been sent
-      notifications.telegram.occuring = true;
-    
-    //earthquake is occuring and the shutoff notifications has not been sent before
-    } else if (earthquake.events.occuring && earthquake.events.shutoff && !notifications.telegram.shutoff) {
-      //create the date
-      DateTime date(earthquake.shutoff_timestamp, DateTime::EPOCH_UNIX);
-      sprintf(body, "Shutoff signal emitted at %02d/%02d/%04d %02d:%02d:%02d!", date.month(), date.day(), date.year(), date.hour(), date.minute(), date.second());
-      //setting that the notification has been sent
-      notifications.telegram.shutoff = true;
-
-    //earthquake is occuring and the collapse notifications has not been sent before
-    } else if (earthquake.events.occuring && earthquake.events.collapse && !notifications.telegram.collapse) {
-      //create the date
-      DateTime date(earthquake.collapse_timestamp, DateTime::EPOCH_UNIX);
-      sprintf(body, "Collapse signal emitted at %02d/%02d/%04d %02d:%02d:%02d!", date.month(), date.day(), date.year(), date.hour(), date.minute(), date.second());
-      //setting that the notification has been sent
-      notifications.telegram.collapse = true;
-    
-    //earthquake is endend and the notifications has not been sent before and there is still time to sent it
-    } else if (earthquake.events.end && !notifications.telegram.end) {
-      sprintf(body, "The earthquake ended! si: %.2f [m/s], pga: %.2f [m/s^2], temperature: %.2f [C]", earthquake.si, earthquake.pga, earthquake.temperature);
-      //setting that the notification has been sent
-      notifications.telegram.end = true;
-    }
-
-    //send the notification to all the users
-    for (auto user : users) {
-      FishGram.sendMessage((uint32_t) user["id"], body);      
-    }
-
-  }
-}
-
-
-//---------------- INITIALIZE FUNCTIONS ----------------
-//function to initialize the Fishino board
-void initFishino() {
-  //resetting fishino
-  DEBUG_PRINT(F("Resetting Fishino..."));
-  while(!Fishino.reset())
-  {
-    DEBUG_PRINT(F("."));
-    delay(500);
-  }
-  DEBUG_PRINTLN(F("OK"));
-  //Connetiing Fishino to the WiFi
-  Fishino.setMode(STATION_MODE);
-  DEBUG_PRINT(F("Connecting AP..."));
-  while(!Fishino.begin(F(MY_SSID), F(MY_PASS)))
-  {
-    DEBUG_PRINT(F("."));
-    delay(500);
-  }
-  DEBUG_PRINTLN(F("OK"));
-  //setting up the ip configuration
-  Fishino.config(ip, gateway, netmask);
-  // wait for connection completion
-  DEBUG_PRINT(("Waiting IP..."));
-  while(Fishino.status() != STATION_GOT_IP)
-  {
-    DEBUG_PRINT(F("."));
-    delay(500);
-  }
-  DEBUG_PRINTLN(F("OK"));
-  // print current IP address
-  DEBUG_PRINT(F("IP address: "));
-  DEBUG_PRINTLN(Fishino.localIP());
-}
-
-//function to initialize the RTC on board
-void initRTC() {
-  if (!RTC.isrunning()) {
-    RTC.adjust(DateTime(F(__DATE__), F(__TIME__)));
-  }
-}
-
-//function to initialize the SD card
-void initSD() {
-  // initialize the SD card.
-  DEBUG_PRINT(F("Preparing SD..."));
-  // Pass over the speed and Chip select for the SD card
-  if (!card.init(SPI_FULL_SPEED, SD_CS)) {
-    DEBUG_PRINTLN(F("FAILED"));
-    return;
-  // initialize a FAT volume.
-  } else if (!volume.init(&card)) {
-    DEBUG_PRINTLN(F("VOLUME FAILED"));
-    return;
-  
-  } else if (!root.openRoot(&volume)) {
-    DEBUG_PRINTLN(F("ROOT FAILED"));
-    return;
   }
 
-  DEBUG_PRINTLN("OK");
-}
-
-//function to initialize the web server
-void initWebServer() {
-  //register the handler for the web server
-  //login and logout handlers
-  web.addHandler(F("/login"), FishinoWebServer::POST, &loginHandler); //login
-  web.addHandler(F("/logout"), FishinoWebServer::POST, &logoutHandler); //logout
-  web.addHandler(F("/password/update"), FishinoWebServer::POST, &passwordUpdateHandler); //change password
-  //index handler
-  web.addHandler(F("/"), FishinoWebServer::GET, &indexHandler);
-  //status handler
-  web.addHandler(F("/status"), FishinoWebServer::GET, &statusHandler);
-  //settings handlers
-  web.addHandler(F("/settings/initialize"), FishinoWebServer::POST, &settingsInitializeHandler); //must be POST
-  web.addHandler(F("/settings/selftest"), FishinoWebServer::POST, &settingsSelftestHandler); //must be POST
-  web.addHandler(F("/settings/clear/d7s"), FishinoWebServer::POST, &settingsClearD7SHandler); //must be POST
-  web.addHandler(F("/settings/clear/data"), FishinoWebServer::POST, &settingsClearDataHandler); //must be POST
-  //getting data
-  web.addHandler(F("/data"), FishinoWebServer::GET, &dataHandler);
-  web.addHandler(F("/data/d7s"), FishinoWebServer::GET, &dataD7SHandler);
-  //alerts handling
-  web.addHandler(F("/recipient/list"), FishinoWebServer::GET, &recipientListHandler);
-  web.addHandler(F("/recipient/new"), FishinoWebServer::POST, &recipientNewHandler);
-  web.addHandler(F("/recipient/delete"), FishinoWebServer::POST, &recipientDeleteHandler);
-  //file handler
-  web.addHandler(F("/" "*"), FishinoWebServer::GET, &fileHandler);
-
-  //Request header "Cookie" to handle the session
-  web.addHeader(F("Cookie"));
-}
-
-//function to initialize the D7S sensor
-void initD7S() {
-  //--- STARTING ---
-  DEBUG_PRINT(F("Starting D7S..."));
-  //start D7S connection
-  D7S.begin();
-  //wait until the D7S is ready
-  while (!D7S.isReady()) {
-    DEBUG_PRINT(F("."));
-    delay(500);
-  }
-  DEBUG_PRINTLN(F("OK"));
-
-  //--- SETTINGS ---
-  //setting the D7S to switch the axis at inizialization time
-  D7S.setAxis(SWITCH_AT_INSTALLATION);
-
-  //--- INTERRUPT SETTINGS ---
-  //enabling interrupt INT1 on pin 2 of Arduino
-  D7S.enableInterruptINT1(INT1_PIN);
-  D7S.enableInterruptINT2(INT2_PIN);
-
-  // //registering event handler
-  D7S.registerInterruptEventHandler(START_EARTHQUAKE, &startEarthquakeHandler); //START_EARTHQUAKE event handler
-  D7S.registerInterruptEventHandler(END_EARTHQUAKE, &endEarthquakeHandler); //END_EARTHQUAKE event handler
-  D7S.registerInterruptEventHandler(SHUTOFF_EVENT, &shutoffHandler); //SHUTOFF_EVENT event handler
-  D7S.registerInterruptEventHandler(COLLAPSE_EVENT, &collapseHandler); //COLLAPSE_EVENT event handler
-
-  DEBUG_PRINTLN(F("Initializing the D7S sensor in 2 seconds. Keep it steady!"));
-  delay(2000);
-
-  //--- INITIALIZZAZION ---
-  DEBUG_PRINT(F("Initializing D7S."));
-  //start the initial installation procedure
-  D7S.initialize();
-  //wait until the D7S is ready (the initializing process is ended)
-  while (!D7S.isReady()) {
-    DEBUG_PRINT(F("."));
-    delay(500);
-  }
-  DEBUG_PRINTLN(F("OK"));
-
-  //--- RESETTING EVENTS ---
-  //reset the events shutoff/collapse memorized into the D7S
-  D7S.resetEvents();
-
-  //reset earthquake events
-  earthquake.events.occuring = false;
-  earthquake.events.end = false;
-  earthquake.events.shutoff = false;
-  earthquake.events.collapse = false;
-
-  //reset web notification
-  notifications.web.occuring = false;
-  notifications.web.end = false;
-  notifications.web.shutoff = false;
-  notifications.web.collapse = false;
-
-  //reset email notification
-  notifications.email.occuring = false;
-  notifications.email.end = false;
-  notifications.email.shutoff = false;
-  notifications.email.collapse = false;
-
-  //reset telegram notification
-  notifications.telegram.occuring = false;
-  notifications.telegram.end = false;
-  notifications.telegram.shutoff = false;
-  notifications.telegram.collapse = false;
-
-  //setting that the earthquake is saved to prevent false entry
-  earthquake.saved = true;
+#endif
 
 
-  //--- STARTING INTERRUPT HANDLING ---
-  D7S.startInterruptHandling();
-}
+//---------------- EARTHQUAKE INFO SAVING CODE SECTION ----------------
 
-void initTelegram() {
-  // start FishGram
-  FishGram.messageEvent(telegramHandler);
-  FishGram.begin(F(MY_TELEGRAM_TOKEN));
-}
-
-//---------------- UTILS FUNCTIONS ----------------
+//Save the earthquake info to the SD card
 void saveEarthquakeData() {
   if (earthquake.events.end && !earthquake.saved) {
     //preparing the  detection to write to the SD card
@@ -1591,11 +1661,11 @@ void saveEarthquakeData() {
   }
 }
 
+
 //---------------- SETUP AND LOOP ---------------- 
 void setup() {
-  Serial.begin(9600);
-  while(!Serial)
-    ;
+  //Initialize the debug serial
+  DEBUG_INIT(9600);
 
   //init fishino
   initFishino();
@@ -1607,6 +1677,7 @@ void setup() {
   initWebServer();
   //initialize the D7S sensor
   initD7S();
+
   //if telegram notification is enabled initialize
   #ifdef ENABLE_TELEGRAM_NOTIFICATION
     initTelegram();
@@ -1616,7 +1687,7 @@ void setup() {
   web.begin();
 
   //all ready to go
-  DEBUG_PRINTLN(F("Ready!\n"));
+  DEBUG_PRINTLN(F("\nFishmograph ready!\n"));
 }
 
 void loop() {
