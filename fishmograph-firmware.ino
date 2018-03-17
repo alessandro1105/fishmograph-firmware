@@ -1,10 +1,14 @@
+#define DEBUG_LEVEL_FATAL
+#define DEBUG_LEVEL_ERROR
+#define DEBUG_LEVEL_WARNING
+#define DEBUG_LEVEL_INFO
+
 #include <FishinoWebServer.h>
 #include <SD.h>
 #include <D7S.h>
 #include <FishinoRTC.h>
 #include <ArduinoJson.h>
 #include <SMTPClient.h>
-#include <FishGram.h>
 
 //---------------- CONFIGURATION ----------------
 
@@ -28,7 +32,7 @@
 
 //--- Email notifications ---
 //Uncomment the line below to enable email notifications
-//#define ENABLE_EMAIL_NOTIFICATION
+#define ENABLE_EMAIL_NOTIFICATION
 //SMTP server information
 //Remember: if you use a server that require TLS you need a client capable secure connections
 #define SMTP_SERVER "smtp.gmail.com" //SMTP server
@@ -40,23 +44,18 @@
 #define SMTP_FROM_NAME "Fishmograph" //Sender name
 #define SMTP_FROM_EMAIL "sender@example.ext" //Sender email
 
-//--- Telegram notifications ---
-//Uncomment the line below to enable telegram notifications
-//#define ENABLE_TELEGRAM_NOTIFICATION
-//telegram bot token
-#define MY_TELEGRAM_TOKEN "your telegram bot token"
-
 //--- General ---
 //Time for which the notification is valid. Expired this time the notification will be not sent
 #define NOTIFICATION_VALIDITY_TIME 120000 //time in ms (2 minutes)
+#define EMAIL_NOTIFICATION_WAIT_TIME 10000 //time to wait in ms before check for email notifications to send
 
 
 //---------------- DEBUG ----------------
 
 //comment this to disable all debug information
-#define DEBUG
+#define DEBUG_OUTPUT
 
-#ifdef DEBUG
+#ifdef DEBUG_OUTPUT
   #define DEBUG_INIT(x) Serial.begin(x); while(!Serial);
   #define DEBUG_PRINT(x) Serial.print(x)
   #define DEBUG_PRINTLN(x) Serial.println(x)
@@ -148,13 +147,6 @@ struct notification_t {
     //email notifications status
     struct status_t email;
   #endif
-
-  //If telegram notifications is enabled
-  #ifdef ENABLE_TELEGRAM_NOTIFICATION
-    //telegram notifications status
-    struct status_t telegram;
-  #endif
-
 } notifications;
 
 //--- Email notifications ---
@@ -162,10 +154,12 @@ struct notification_t {
 #ifdef ENABLE_EMAIL_NOTIFICATION
   //Fishino secure client to connet to the SMTP server
   FishinoSecureClient client;
+
+  long lastCheckEmailNotifications = 0;
 #endif
 
 
-//---------------- D7S CODE SECTION ----------------
+//---------------- RESET NOTIFICATIONS CODE SECTION ----------------
 //Reset notification status
 void resetNotifications() {
 
@@ -181,14 +175,6 @@ void resetNotifications() {
     notifications.email.end = false;
     notifications.email.shutoff = false;
     notifications.email.collapse = false;
-  #endif
-
-  #ifdef ENABLE_TELEGRAM_NOTIFICATION
-    //reset telegram notification
-    notifications.telegram.occuring = false;
-    notifications.telegram.end = false;
-    notifications.telegram.shutoff = false;
-    notifications.telegram.collapse = false;
   #endif
 
 }
@@ -498,7 +484,6 @@ void sendFile(FishinoWebServer& web, const char* filename, const __FlashStringHe
   // if the filename is not valid
   if (!filename) {
     sendHTTPStatusCode(web, 404);
-    sendSessionCookie(web);
     web.endHeaders();
     client.println(F("Could not parse URL"));
     client.println();
@@ -509,7 +494,6 @@ void sendFile(FishinoWebServer& web, const char* filename, const __FlashStringHe
   //if the file doesn't exists or it's protected
   if ((!allowProtectedFile && (strcmp(filename, "DATA.TXT") == 0 || strcmp(filename, "EMAILS.TXT") == 0 || strcmp(filename, "PASSWORD.TXT") == 0)) || !file.open(&root, filename, O_READ)) {
     sendHTTPStatusCode(web, 404);
-    sendSessionCookie(web);
     web.endHeaders();
     client.print(F("Could not find file: "));
     client.println(filename);
@@ -521,7 +505,6 @@ void sendFile(FishinoWebServer& web, const char* filename, const __FlashStringHe
 
   //the file exists and can be sent
   sendHTTPStatusCode(web, 200);
-  sendSessionCookie(web);
 
   //svg type
   if (contentType != NULL) {
@@ -553,22 +536,17 @@ void sendFile(FishinoWebServer& web, const char* filename, const __FlashStringHe
 
 //Start a web session
 void startSession(FishinoWebServer &web) {
+  //intialize the session cookie value
   long cookieSessionValue = -1;
   //read the session cookie
   const char *cookieSession = web.getHeaderValue("Cookie");
   //if the request has send a cookie
   if (cookieSession != 0) {
     cookieSessionValue = atoi(cookieSession +8);
-  }  
+  }
   //check if the value of the cookie is different from the session ID we are currently handling
-  if (cookieSessionValue != sessionID || cookieSessionValue < 0) {
-    // If the browser sent a valid cookie
-    if (cookieSessionValue > 0) {
-      sessionID = cookieSessionValue;
-    } else {
-      //we need to generate a new sessionID
-      sessionID = RTC.now().getUnixTime(); //using timestamp for uniqness
-    }
+  if (cookieSessionValue < 0 || cookieSessionValue != sessionID) {
+    sessionID = RTC.now().getUnixTime(); //using timestamp for uniqness
     //reset isUserLogged session variable
     isUserLogged = false;
   }
@@ -577,8 +555,8 @@ void startSession(FishinoWebServer &web) {
 //Send the web session cookie
 void sendSessionCookie(FishinoWebServer &web) {
   //we need to send the "set-cookie" header with the cookie containing the session ID
-  char cookie[30];
-  sprintf(cookie, "session=%d", sessionID);
+  char cookie[50];
+  sprintf(cookie, "session=%d; Path=/", sessionID);
   sendHTTPHeader(web, F("Set-Cookie"), cookie);
 }
 
@@ -1398,202 +1376,6 @@ bool fileHandler(FishinoWebServer &web) {
 #endif
 
 
-//---------------- TELEGRAM NOTIFICATIONS CODE SECTION ----------------
-
-//Add this code only if notification by telegram is enabled
-#ifdef ENABLE_TELEGRAM_NOTIFICATION
-
-  //Init Telegram
-  void initTelegram() {
-    DEBUG_PRINTLN("--- Init Telegram ----");
-    DEBUG_PRINT("Initializing...");
-    // start FishGram
-    FishGram.messageEvent(telegramHandler);
-    FishGram.begin(F(MY_TELEGRAM_TOKEN));
-
-    DEBUG_PRINTLN("OK");
-  }
-
-
-  //handler for FishGram (it handle incoming telegram messages)
-  bool telegramHandler(uint32_t id, const char *firstName, const char *lastName, const char *message) {
-    String answer;
-
-    DEBUG_PRINT(firstName);
-    DEBUG_PRINT(" ");
-    DEBUG_PRINT(lastName);
-    DEBUG_PRINT(" ");
-    DEBUG_PRINTLN(message);
-
-    //checking the message (command) received
-    if (strcmp(message, "/start") == 0) {
-      answer = "Hello ";
-      answer += firstName;
-      answer += ", thanks for using Fishmograph!";
-    
-    //register or unregister an user
-    } else if (strcmp(message, "/register") == 0 || strcmp(message, "/unregister") == 0) {
-
-      if (!file.open(&root, "TELEGRAM.TXT", O_READ | O_WRITE)) {
-        file.open(&root, "TELEGRAM.TXT", O_CREAT | O_WRITE | O_TRUNC);
-        file.print(F("[]"));
-        file.rewind();
-      }
-
-      //read the file max 1024 char
-      char buffer[1024];
-
-      //read the file
-      int size = file.read(buffer, 1023);
-      buffer[size] = 0;
-
-      //interpret json
-      StaticJsonBuffer<1024> jsonBuffer;
-      JsonArray& users = jsonBuffer.parseArray(buffer);
-
-      //if the new user asked to register
-      if (strcmp(message, "/register") == 0) {
-        //max 10 users
-        if (users.size() == 10) {
-          answer = "Sorry, I reach the user limit!";
-        } else {
-          //search if the user is already registered
-          bool found = false;
-          for (int i = 0; i < users.size(); i++) {
-            if (((uint32_t) users[i]["id"]) == id) {
-              found = true;
-              break;
-            }
-          }
-
-          if (!found) {
-            JsonObject& user = users.createNestedObject();
-            user["id"] = (uint32_t) id;
-
-            //write the new json to the file
-            file.rewind();
-            users.printTo(file);
-          }
-
-          answer = "You have been successfully registered to receive notifications!";
-        }
-
-        //close the file
-        file.close();
-
-      } else {
-        //search and remove the user id
-        for (int i = 0; i < users.size(); i++) {
-          if (((uint32_t) users[i]["id"]) == id) {
-            users.remove(i);
-            break;
-          }
-        }
-
-        //close the file
-        file.close();
-
-        answer = "You have been unregistered!";
-      }
-
-    } else {
-      answer = "Sorry, i didn't understand!";
-    }
-    
-    FishGram.sendMessage(id, answer.c_str());
-
-    return true;
-  }
-
-  //Send telegram notifications
-  void sendTelegramNotifications() {
-    long now = RTC.now().getUnixTime();
-
-    //check if there are notification to be sent
-    if ((earthquake.events.occuring && !notifications.telegram.occuring) && (now - earthquake.start_timestamp) <= NOTIFICATION_VALIDITY_TIME ||
-        (earthquake.events.occuring && earthquake.events.shutoff && !notifications.telegram.shutoff) && (now - earthquake.shutoff_timestamp) <= NOTIFICATION_VALIDITY_TIME ||
-        (earthquake.events.occuring && earthquake.events.collapse && !notifications.telegram.collapse) && (now - earthquake.collapse_timestamp) <= NOTIFICATION_VALIDITY_TIME ||
-        (earthquake.events.end && !notifications.telegram.end) && (now - earthquake.end_timestamp) <= NOTIFICATION_VALIDITY_TIME) {
-
-      //if the file doesn't exists
-      if (!file.open(&root, "TELEGRAM.TXT", O_READ)) {
-        file.open(&root, "TELEGRAM.TXT", O_CREAT | O_WRITE | O_TRUNC);
-        file.print(F("[]"));
-        file.close();
-        return; //no telegram users
-      }
-
-      //read the entire file of the alerts
-      char buffer[1024];
-
-      //read the file
-      int size = file.read(buffer, 1023);
-      buffer[size] = 0;
-
-      //closing file
-      file.close();
-
-      //interpret json
-      StaticJsonBuffer<1024> jsonBuffer;
-      JsonArray& users = jsonBuffer.parseArray(buffer);
-
-      //file not valid
-      if (!users.success()) {
-        DEBUG_PRINTLN("File TELEGRAM.TXT error!");
-        return;
-      }
-
-      //no recipients
-      if (users.size() == 0) {
-        return;
-      }
-
-      //notification
-      char body[100];
-
-      //Subject and message
-      //earthquake is occuring and the notifications has not been sent before
-      if (earthquake.events.occuring && !notifications.telegram.occuring) {
-        //create the date
-        DateTime date(earthquake.start_timestamp, DateTime::EPOCH_UNIX);
-        sprintf(body, "An earthquake started at %02d/%02d/%04d %02d:%02d:%02d!", date.month(), date.day(), date.year(), date.hour(), date.minute(), date.second());
-        //setting that the notification has been sent
-        notifications.telegram.occuring = true;
-      
-      //earthquake is occuring and the shutoff notifications has not been sent before
-      } else if (earthquake.events.occuring && earthquake.events.shutoff && !notifications.telegram.shutoff) {
-        //create the date
-        DateTime date(earthquake.shutoff_timestamp, DateTime::EPOCH_UNIX);
-        sprintf(body, "Shutoff signal emitted at %02d/%02d/%04d %02d:%02d:%02d!", date.month(), date.day(), date.year(), date.hour(), date.minute(), date.second());
-        //setting that the notification has been sent
-        notifications.telegram.shutoff = true;
-
-      //earthquake is occuring and the collapse notifications has not been sent before
-      } else if (earthquake.events.occuring && earthquake.events.collapse && !notifications.telegram.collapse) {
-        //create the date
-        DateTime date(earthquake.collapse_timestamp, DateTime::EPOCH_UNIX);
-        sprintf(body, "Collapse signal emitted at %02d/%02d/%04d %02d:%02d:%02d!", date.month(), date.day(), date.year(), date.hour(), date.minute(), date.second());
-        //setting that the notification has been sent
-        notifications.telegram.collapse = true;
-      
-      //earthquake is endend and the notifications has not been sent before and there is still time to sent it
-      } else if (earthquake.events.end && !notifications.telegram.end) {
-        sprintf(body, "The earthquake ended! si: %.2f [m/s], pga: %.2f [m/s^2], temperature: %.2f [C]", earthquake.si, earthquake.pga, earthquake.temperature);
-        //setting that the notification has been sent
-        notifications.telegram.end = true;
-      }
-
-      //send the notification to all the users
-      for (auto user : users) {
-        FishGram.sendMessage((uint32_t) user["id"], body);      
-      }
-
-    }
-  }
-
-#endif
-
-
 //---------------- EARTHQUAKE INFO SAVING CODE SECTION ----------------
 
 //Save the earthquake info to the SD card
@@ -1678,11 +1460,6 @@ void setup() {
   //initialize the D7S sensor
   initD7S();
 
-  //if telegram notification is enabled initialize
-  #ifdef ENABLE_TELEGRAM_NOTIFICATION
-    initTelegram();
-  #endif
-
   //the system is initialized, let's start the web server
   web.begin();
 
@@ -1699,11 +1476,9 @@ void loop() {
 
   #ifdef ENABLE_EMAIL_NOTIFICATION
     //send email notifications
-    sendEmailNotifications();
-  #endif
-
-  #ifdef ENABLE_TELEGRAM_NOTIFICATION
-    FishGram.loop();
-    sendTelegramNotifications();
+    if (millis() > lastCheckEmailNotifications + EMAIL_NOTIFICATION_WAIT_TIME) {
+      sendEmailNotifications();
+      lastCheckEmailNotifications = millis();
+    }
   #endif
 }
